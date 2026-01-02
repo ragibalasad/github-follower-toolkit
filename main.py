@@ -126,6 +126,7 @@ def unfollow_stale_users(state):
     followers = get_my_followers()
     cutoff = datetime.now(timezone.utc) - timedelta(days=UNFOLLOW_AFTER_DAYS)
 
+    print("Unfollowing stale users...")
     for username, meta in list(state.items()):
         followed_at = isoparse(meta["followed_at"])
 
@@ -139,6 +140,7 @@ def unfollow_stale_users(state):
             state.pop(username, None)
             save_state(state)
             sleep_random()
+    print("Done.")
 
 
 # =========================
