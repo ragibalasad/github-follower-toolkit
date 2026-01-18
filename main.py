@@ -18,14 +18,14 @@ GITHUB_API = "https://api.github.com"
 TOKEN = os.getenv("GITHUB_TOKEN")
 
 DAYS_ACTIVE = 7
-MAX_FOLLOWS_PER_DAY = 25
+MAX_FOLLOWS_PER_DAY = 100
 UNFOLLOW_AFTER_DAYS = 3
 
 STATE_FILE = "followed_users.json"
 DRY_RUN = False
 
-MIN_DELAY = 15
-MAX_DELAY = 45
+MIN_DELAY = 0
+MAX_DELAY = 0
 
 HEADERS = {"Authorization": f"token {TOKEN}", "Accept": "application/vnd.github+json"}
 
@@ -54,13 +54,13 @@ def github_get(endpoint, params=None):
 
 def github_put(endpoint):
     r = requests.put(f"{GITHUB_API}{endpoint}", headers=HEADERS)
-    if r.status_code not in (204, 304):
+    if r.status_code not in (204, 304, 404):
         r.raise_for_status()
 
 
 def github_delete(endpoint):
     r = requests.delete(f"{GITHUB_API}{endpoint}", headers=HEADERS)
-    if r.status_code not in (204, 304):
+    if r.status_code not in (204, 304, 404):
         r.raise_for_status()
 
 
