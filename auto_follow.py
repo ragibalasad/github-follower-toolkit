@@ -5,15 +5,22 @@ GitHub Auto-Follow Script
 Efficiently fetches followers of a target GitHub user and follows them
 only if they do not already follow the authenticated user and are not already followed.
 
-Built with optimal bulk pre-fetching ($O(1)$ set lookups), rate limit protection,
-secondary abuse rate limit backoff, state caching, and configurable pacing.
+Features:
+- Fastfetch/Neofetch style header with TrueColor avatar ANSI pixel art & stats
+- Pre-fetched bulk caching for O(1) in-memory relationship checks
+- Primary rate-limit monitoring & auto-sleep
+- Secondary rate-limit (abuse detection) mitigation & exponential backoff
+- Resumable state persistence (.follow_state.json)
+- Dry-run simulation mode
 """
 
 import argparse
 import datetime
+import io
 import json
 import os
 import random
+import re
 import signal
 import sys
 import time
@@ -23,11 +30,19 @@ from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 import requests
 from dotenv import load_dotenv
 
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+
 # Terminal color codes for rich CLI presentation
 class Colors:
     RESET = "\033[0m"
     BOLD = "\033[1m"
     DIM = "\033[2m"
+    UNDERLINE = "\033[4m"
+    
     RED = "\033[91m"
     GREEN = "\033[92m"
     YELLOW = "\033[93m"
@@ -35,6 +50,10 @@ class Colors:
     MAGENTA = "\033[95m"
     CYAN = "\033[96m"
     WHITE = "\033[97m"
+    GRAY = "\033[90m"
+
+    # Backgrounds
+    BG_DARK = "\033[48;2;18;20;24m"
 
 def log_info(msg: str) -> None:
     print(f"{Colors.BLUE}[INFO]{Colors.RESET} {msg}")
@@ -51,6 +70,164 @@ def log_error(msg: str) -> None:
 def log_dim(msg: str) -> None:
     print(f"{Colors.DIM}       {msg}{Colors.RESET}")
 
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences to compute visible string width."""
+    return re.sub(r'\x1b\[[0-9;]*[mGKH]', '', text)
+
+
+# ==============================================================================
+# Fastfetch / Neofetch ASCII & TrueColor Avatar Renderer
+# ==============================================================================
+
+OCTOCAT_FALLBACK_ASCII = [
+    f"{Colors.CYAN}       .---.          {Colors.RESET}",
+    f"{Colors.CYAN}      /     \\         {Colors.RESET}",
+    f"{Colors.CYAN}     (  {Colors.WHITE}o   o{Colors.CYAN}  )        {Colors.RESET}",
+    f"{Colors.CYAN}     /  {Colors.MAGENTA}==={Colors.CYAN}  \\        {Colors.RESET}",
+    f"{Colors.CYAN}    / /     \\ \\       {Colors.RESET}",
+    f"{Colors.CYAN}   ( (       ) )      {Colors.RESET}",
+    f"{Colors.CYAN}    \\ \\_   _/ /       {Colors.RESET}",
+    f"{Colors.CYAN}     \\__)-(__/        {Colors.RESET}",
+    f"{Colors.CYAN}      /| | |\\         {Colors.RESET}",
+    f"{Colors.CYAN}     ( | | | )        {Colors.RESET}",
+    f"{Colors.CYAN}      \\| | |/         {Colors.RESET}",
+    f"{Colors.CYAN}       '---'          {Colors.RESET}",
+]
+
+def image_to_ansi_halfblocks(img_bytes: bytes, target_width: int = 24, target_height: int = 24) -> List[str]:
+    """
+    Converts raw image bytes into TrueColor ANSI half-block (▀) strings.
+    Each character row renders 2 vertical pixels (width x height/2 lines).
+    """
+    if not HAS_PIL:
+        return OCTOCAT_FALLBACK_ASCII
+
+    try:
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+        img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        
+        lines: List[str] = []
+        bg_r, bg_g, bg_b = 18, 20, 24 # Dark background blending
+
+        # Process 2 pixel rows at a time for each terminal line
+        for y in range(0, target_height, 2):
+            line_parts: List[str] = []
+            for x in range(target_width):
+                # Top pixel (foreground)
+                r1, g1, b1, a1 = img.getpixel((x, y))
+                if a1 < 255:
+                    alpha = a1 / 255.0
+                    r1 = int(r1 * alpha + bg_r * (1 - alpha))
+                    g1 = int(g1 * alpha + bg_g * (1 - alpha))
+                    b1 = int(b1 * alpha + bg_b * (1 - alpha))
+
+                # Bottom pixel (background)
+                if y + 1 < target_height:
+                    r2, g2, b2, a2 = img.getpixel((x, y + 1))
+                    if a2 < 255:
+                        alpha = a2 / 255.0
+                        r2 = int(r2 * alpha + bg_r * (1 - alpha))
+                        g2 = int(g2 * alpha + bg_g * (1 - alpha))
+                        b2 = int(b2 * alpha + bg_b * (1 - alpha))
+                else:
+                    r2, g2, b2 = bg_r, bg_g, bg_b
+
+                # ANSI 24-bit TrueColor: \033[38;2;r;g;bm (fg) and \033[48;2;r;g;bm (bg)
+                line_parts.append(f"\033[38;2;{r1};{g1};{b1}m\033[48;2;{r2};{g2};{b2}m▀\033[0m")
+            
+            lines.append("".join(line_parts))
+        return lines
+
+    except Exception:
+        return OCTOCAT_FALLBACK_ASCII
+
+def fetch_avatar_ansi(avatar_url: Optional[str], session: requests.Session) -> List[str]:
+    """Fetch user avatar and convert to ANSI TrueColor blocks."""
+    if not avatar_url or not HAS_PIL:
+        return OCTOCAT_FALLBACK_ASCII
+
+    try:
+        resp = session.get(avatar_url, timeout=5)
+        if resp.status_code == 200:
+            return image_to_ansi_halfblocks(resp.content, target_width=24, target_height=24)
+    except Exception:
+        pass
+    return OCTOCAT_FALLBACK_ASCII
+
+def render_neofetch_banner(
+    auth_user: Dict[str, Any],
+    target_info: Dict[str, Any],
+    api_remaining: int,
+    api_limit: int,
+    max_follows: int,
+    delay_min: float,
+    delay_max: float,
+    dry_run: bool,
+    avatar_lines: List[str]
+) -> None:
+    """Renders a side-by-side Neofetch / Fastfetch banner with avatar and system stats."""
+    username = auth_user.get("login", "unknown")
+    name = auth_user.get("name") or username
+    bio = (auth_user.get("bio") or "GitHub Developer").replace("\n", " ").strip()
+    if len(bio) > 36:
+        bio = bio[:33] + "..."
+
+    followers = auth_user.get("followers", 0)
+    following = auth_user.get("following", 0)
+    public_repos = auth_user.get("public_repos", 0)
+    created_year = auth_user.get("created_at", "2020")[:4]
+
+    target_user = target_info.get("login", "unknown")
+    target_followers = target_info.get("followers", 0)
+
+    # API quota styling
+    api_pct = int((api_remaining / max(1, api_limit)) * 100)
+    if api_pct > 50:
+        quota_color = Colors.GREEN
+    elif api_pct > 20:
+        quota_color = Colors.YELLOW
+    else:
+        quota_color = Colors.RED
+
+    mode_badge = f"{Colors.MAGENTA}{Colors.BOLD}DRY-RUN (Simulated){Colors.RESET}" if dry_run else f"{Colors.GREEN}{Colors.BOLD}ACTIVE (Live Follow){Colors.RESET}"
+
+    # Build Right Column lines
+    header_title = f"{Colors.CYAN}{Colors.BOLD}{username}@github{Colors.RESET}"
+    header_div = f"{Colors.GRAY}{'─' * 38}{Colors.RESET}"
+
+    info_lines = [
+        header_title,
+        header_div,
+        f"{Colors.BOLD}{Colors.WHITE}User:{Colors.RESET}       {name} {Colors.DIM}(@{username}){Colors.RESET}",
+        f"{Colors.BOLD}{Colors.WHITE}Bio:{Colors.RESET}        {Colors.DIM}{bio}{Colors.RESET}",
+        f"{Colors.BOLD}{Colors.WHITE}Account:{Colors.RESET}    Joined {created_year} | {public_repos} Repos",
+        f"{Colors.BOLD}{Colors.WHITE}Network:{Colors.RESET}    {Colors.GREEN}{followers}{Colors.RESET} Followers | {Colors.BLUE}{following}{Colors.RESET} Following",
+        f"{Colors.BOLD}{Colors.WHITE}Target:{Colors.RESET}     {Colors.YELLOW}@{target_user}{Colors.RESET} {Colors.DIM}({target_followers:,} followers){Colors.RESET}",
+        f"{Colors.BOLD}{Colors.WHITE}API Quota:{Colors.RESET}  {quota_color}{api_remaining:,} / {api_limit:,} ({api_pct}%){Colors.RESET}",
+        f"{Colors.BOLD}{Colors.WHITE}Safety:{Colors.RESET}     Pacing {delay_min:.1f}s–{delay_max:.1f}s | Limit: {max_follows}",
+        f"{Colors.BOLD}{Colors.WHITE}Mode:{Colors.RESET}       {mode_badge}",
+        "",
+        # Fastfetch color dots strip
+        f" \033[90m●\033[0m \033[91m●\033[0m \033[92m●\033[0m \033[93m●\033[0m \033[94m●\033[0m \033[95m●\033[0m \033[96m●\033[0m \033[97m●\033[0m"
+    ]
+
+    total_rows = max(len(avatar_lines), len(info_lines))
+    avatar_width = max(len(strip_ansi(line)) for line in avatar_lines) if avatar_lines else 24
+
+    print("\n")
+    for i in range(total_rows):
+        left = avatar_lines[i] if i < len(avatar_lines) else " " * avatar_width
+        left_pad = avatar_width - len(strip_ansi(left))
+        left_str = left + (" " * max(0, left_pad))
+
+        right = info_lines[i] if i < len(info_lines) else ""
+        print(f"  {left_str}   {right}")
+    print("\n")
+
+
+# ==============================================================================
+# State Manager
+# ==============================================================================
 
 class StateManager:
     """Manages persistent state across runs to avoid redundant actions."""
@@ -100,6 +277,10 @@ class StateManager:
         self.save()
 
 
+# ==============================================================================
+# GitHub API Client
+# ==============================================================================
+
 class GitHubAPIClient:
     """Robust GitHub API client with rate-limit monitoring, pagination, and backoff."""
 
@@ -113,7 +294,7 @@ class GitHubAPIClient:
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self.token}",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "github-efficient-auto-follow-tool/1.0"
+            "User-Agent": "github-fastfetch-auto-follow/1.0"
         })
         self.rate_limit_limit = 5000
         self.rate_limit_remaining = 5000
@@ -190,7 +371,7 @@ class GitHubAPIClient:
                         retries += 1
                         continue
 
-                    # If bad credentials or permission forbidden
+                    # If bad credentials
                     if "bad credentials" in message:
                         log_error("Invalid GitHub Token. Please check your GITHUB_TOKEN permissions.")
                         sys.exit(1)
@@ -215,7 +396,7 @@ class GitHubAPIClient:
         raise RuntimeError(f"Failed to execute API request to {url}")
 
     def get_authenticated_user(self) -> Dict[str, Any]:
-        """Fetch details of the authenticated user to verify token & get base stats."""
+        """Fetch details of the authenticated user to verify token & get profile stats."""
         resp = self.request("GET", "/user")
         if resp.status_code != 200:
             log_error(f"Failed to authenticate user: HTTP {resp.status_code} - {resp.text}")
@@ -325,6 +506,10 @@ class GitHubAPIClient:
             return False
 
 
+# ==============================================================================
+# Runner Pipeline
+# ==============================================================================
+
 class AutoFollowRunner:
     """Coordinates filtering, rate-limit pacing, and execution."""
 
@@ -367,16 +552,9 @@ class AutoFollowRunner:
         self.interrupted = True
 
     def run(self) -> None:
-        print(f"\n{Colors.BOLD}{Colors.CYAN}══════════════════════════════════════════════════════════════════════{Colors.RESET}")
-        print(f"{Colors.BOLD}{Colors.CYAN}              GitHub Auto-Follow Pipeline (High-Efficiency)            {Colors.RESET}")
-        print(f"{Colors.BOLD}{Colors.CYAN}══════════════════════════════════════════════════════════════════════{Colors.RESET}\n")
-
         # 1. Authenticated User Check
         auth_user = self.client.get_authenticated_user()
         auth_login = auth_user["login"]
-        log_info(f"Authenticated as: {Colors.BOLD}@{auth_login}{Colors.RESET} ({auth_user.get('name', 'N/A')})")
-        log_dim(f"Followers: {auth_user.get('followers', 0)} | Following: {auth_user.get('following', 0)}")
-        log_dim(f"API Rate Limit: {self.client.rate_limit_remaining}/{self.client.rate_limit_limit} remaining")
 
         # 2. Target User Validation
         target_info = self.client.get_user_info(self.target_username)
@@ -386,7 +564,6 @@ class AutoFollowRunner:
 
         target_login = target_info["login"]
         target_follower_count = target_info.get("followers", 0)
-        log_info(f"Target User: {Colors.BOLD}@{target_login}{Colors.RESET} ({target_follower_count} followers)")
 
         if target_login.lower() == auth_login.lower():
             log_error("Target user cannot be yourself!")
@@ -396,11 +573,22 @@ class AutoFollowRunner:
             log_warn(f"Target user '@{target_login}' has 0 followers. Nothing to do.")
             return
 
-        if self.dry_run:
-            print(f"\n{Colors.MAGENTA}{Colors.BOLD}⚠️  DRY-RUN MODE ENABLED — No follow requests will be sent.{Colors.RESET}\n")
+        # Fetch Avatar and render Fastfetch Banner
+        avatar_lines = fetch_avatar_ansi(auth_user.get("avatar_url"), self.client.session)
+        render_neofetch_banner(
+            auth_user=auth_user,
+            target_info=target_info,
+            api_remaining=self.client.rate_limit_remaining,
+            api_limit=self.client.rate_limit_limit,
+            max_follows=self.max_follows,
+            delay_min=self.delay_min,
+            delay_max=self.delay_max,
+            dry_run=self.dry_run,
+            avatar_lines=avatar_lines
+        )
 
         # 3. Pre-fetch My Followers & Following in Bulk for O(1) in-memory checks
-        print(f"\n{Colors.BOLD}── Step 1: Pre-fetching Relationship Cache ───────────────────────────{Colors.RESET}")
+        print(f"{Colors.BOLD}── Step 1: Pre-fetching Relationship Cache ───────────────────────────{Colors.RESET}")
         log_info(f"Fetching your followers (who follow @{auth_login})...")
         my_followers = self.client.fetch_all_followers_set()
         log_success(f"Cached {len(my_followers)} follower(s) who follow you.")
@@ -457,8 +645,7 @@ class AutoFollowRunner:
             if self.dry_run:
                 log_info(f"{Colors.MAGENTA}[DRY RUN]{Colors.RESET} [{current_num}/{self.max_follows}] Would follow {Colors.BOLD}@{candidate_login}{Colors.RESET} ({user_url})")
                 self.stats["followed_success"] += 1
-                # Small simulation delay
-                time.sleep(0.1)
+                time.sleep(0.05)
                 continue
 
             # Real follow execution
@@ -498,8 +685,11 @@ class AutoFollowRunner:
         print(f"{Colors.BOLD}{Colors.CYAN}══════════════════════════════════════════════════════════════════════{Colors.RESET}\n")
 
 
+# ==============================================================================
+# CLI Entry Point
+# ==============================================================================
+
 def parse_args() -> argparse.Namespace:
-    # Load .env file if present
     load_dotenv()
 
     parser = argparse.ArgumentParser(
@@ -574,7 +764,6 @@ def main() -> None:
 
     if not args.target:
         log_error("Target GitHub username is required! Provide it via --target or GITHUB_TARGET_USER in .env")
-        parser = argparse.ArgumentParser()
         sys.exit(1)
 
     state_mgr = StateManager(state_file=args.state_file)

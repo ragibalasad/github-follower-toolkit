@@ -1,29 +1,53 @@
-# GitHub Auto-Follow Script (High-Efficiency & Rate-Limit Safe)
+# GitHub Auto-Follow Script (Fastfetch Style & Rate-Limit Safe)
 
-An ultra-efficient, rate-limit aware CLI tool to extract followers of a target GitHub user and follow them one-by-one with your authenticated GitHub account — **strictly filtering out any users who already follow you or are already followed by you**.
+An ultra-efficient, rate-limit aware CLI tool with a **Fastfetch/Neofetch style system banner** to extract followers of a target GitHub user and follow them one-by-one with your authenticated GitHub account — **strictly filtering out any users who already follow you or are already followed by you**.
+
+---
+
+## Visual Presentation (Fastfetch / Neofetch Terminal Banner)
+
+Upon starting, the script displays your GitHub avatar in **24-bit TrueColor ANSI half-blocks (`▀`)** alongside your live GitHub account metrics:
+
+```text
+       ▄▄▄▄▄▄▄▄▄▄▄▄       ragibalasad@github
+    ▄████████████████▄    ──────────────────────────────────────
+   ████████████████████   User:       Ragib Al Asad (@ragibalasad)
+  ████▀▀            ▀▀██  Bio:        Full-Stack Engineer & Builder
+  ████  ███      ███  ██  Account:    Joined 2021 | 48 Repos
+  ████  ▀▀▀      ▀▀▀  ██  Network:    142 Followers | 95 Following
+  ████     ▄▄▄▄▄▄     ██  Target:     @octocat (4,820 followers)
+   ████▄   ▀▀▀▀▀▀   ▄██   API Quota:  4,985 / 5,000 (99%)
+    ▀████████████████▀    Safety:     Pacing 2.0s–4.0s | Limit: 50
+       ▀▀▀▀▀▀▀▀▀▀▀▀       Mode:       ACTIVE (Live Follow)
+                          
+                           ● ● ● ● ● ● ● ●
+```
 
 ---
 
 ## Key Features & Efficiency Architecture
 
-1. **$O(1)$ In-Memory Relationship Filtering**:
-   - Instead of sending individual API requests (`GET /users/{username}/following/{target}`) to check each candidate (which wastes 1 API quota per person), this tool **pre-fetches your followers and following lists in bulk (`per_page=100`)**.
-   - For example, if you have 1,000 followers and follow 500 accounts, this takes only **15 API calls total**.
-   - Every candidate is then verified with an in-memory hash set lookup in $O(1)$ time with **zero additional API calls**.
+1. **Fastfetch / Neofetch Profile Banner**:
+   - Converts your GitHub avatar thumbnail into high-fidelity ANSI half-block pixels.
+   - Renders live API quota, network counts, safety bounds, and terminal color swatches.
+   - Built-in ANSI Octocat fallback if offline or avatar is unavailable.
 
-2. **Primary Rate-Limit Protection (5,000 req/hr)**:
+2. **$O(1)$ In-Memory Relationship Filtering**:
+   - Pre-fetches your followers and following lists in bulk (`per_page=100`) into in-memory hash sets.
+   - Avoids burning 1 API request per candidate, reducing API calls by **>99%**.
+
+3. **Primary Rate-Limit Protection (5,000 req/hr)**:
    - Tracks `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers on every response.
    - Automatically pauses if remaining quota drops below safety thresholds.
 
-3. **Secondary Abuse Rate-Limit Mitigation**:
-   - GitHub actively monitors rapid mutations (`PUT /user/following/:username`).
+4. **Secondary Abuse Rate-Limit Mitigation**:
    - Implements **randomized jitter delays** (default 2.0s - 4.0s) between follow calls.
    - Listens to HTTP `403` / `429` with `Retry-After` headers and applies exponential backoff.
 
-4. **Resumable State Caching (`.follow_state.json`)**:
-   - Keeps track of followed accounts so restarting or running multiple sessions won't re-follow previously processed users.
+5. **Resumable State Caching (`.follow_state.json`)**:
+   - Tracks followed accounts so restarting or running multiple sessions won't re-follow previously processed users.
 
-5. **Dry-Run Mode (`--dry-run`)**:
+6. **Dry-Run Mode (`--dry-run`)**:
    - Preview candidate filtering and potential follows without executing real `PUT` follow requests.
 
 ---
@@ -36,8 +60,8 @@ An ultra-efficient, rate-limit aware CLI tool to extract followers of a target G
 
 ### 2. Clone & Install Dependencies
 ```bash
-git clone <your-repo-url>
-cd auto-follow-script
+git clone https://github.com/ragibalasad/follow-active-users
+cd follow-active-users
 
 # Create virtual environment (optional but recommended)
 python3 -m venv .venv
@@ -71,7 +95,7 @@ GITHUB_TOKEN=ghp_your_actual_token_here
 ## Usage Examples
 
 ### 1. Test in Dry-Run Mode (Simulation)
-Preview who would be followed without sending actual requests:
+Preview candidate filtering and stats without sending follow requests:
 ```bash
 python3 auto_follow.py --target octocat --dry-run
 ```
@@ -83,7 +107,7 @@ python3 auto_follow.py --target octocat --max-follows 25
 ```
 
 ### 3. Customize Delay & Pacing
-Adjust the random delay range (in seconds) between follows for extra safety:
+Adjust the random delay range (in seconds) between follows:
 ```bash
 python3 auto_follow.py --target octocat --max-follows 50 --delay-min 3.0 --delay-max 6.0
 ```

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
 Unit tests for GitHub Auto-Follow Script.
-Tests filtering logic, rate-limit headers handling, state management, and retry backoff.
+Tests filtering logic, rate-limit headers handling, state management, retry backoff,
+and Fastfetch/Neofetch ANSI avatar banner rendering.
 """
 
+import io
 import json
 import os
 import tempfile
@@ -11,7 +13,16 @@ import unittest
 from unittest.mock import MagicMock, patch
 import requests
 
-from auto_follow import AutoFollowRunner, GitHubAPIClient, StateManager
+from PIL import Image
+
+from auto_follow import (
+    AutoFollowRunner,
+    GitHubAPIClient,
+    StateManager,
+    image_to_ansi_halfblocks,
+    render_neofetch_banner,
+    strip_ansi
+)
 
 
 class TestStateManager(unittest.TestCase):
@@ -45,6 +56,50 @@ class TestStateManager(unittest.TestCase):
         mgr.clear()
         self.assertFalse(mgr.is_previously_followed("bob"))
         self.assertEqual(mgr.state["total_followed_all_time"], 0)
+
+
+class TestAvatarAndBanner(unittest.TestCase):
+    def test_image_to_ansi_halfblocks(self):
+        # Create a simple 24x24 RGB image in memory
+        img = Image.new("RGBA", (24, 24), color=(255, 0, 0, 255))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        lines = image_to_ansi_halfblocks(img_bytes, target_width=24, target_height=24)
+        self.assertEqual(len(lines), 12)  # 24 height / 2 = 12 terminal rows
+        for line in lines:
+            stripped = strip_ansi(line)
+            self.assertEqual(len(stripped), 24)
+
+    def test_render_neofetch_banner(self):
+        auth_user = {
+            "login": "testuser",
+            "name": "Test Developer",
+            "bio": "Building cool CLI tools",
+            "followers": 100,
+            "following": 50,
+            "public_repos": 10,
+            "created_at": "2021-05-01T00:00:00Z"
+        }
+        target_info = {
+            "login": "targetdev",
+            "followers": 500
+        }
+        dummy_avatar_lines = ["▀" * 24] * 12
+
+        # Ensure render_neofetch_banner executes without error
+        render_neofetch_banner(
+            auth_user=auth_user,
+            target_info=target_info,
+            api_remaining=4950,
+            api_limit=5000,
+            max_follows=50,
+            delay_min=2.0,
+            delay_max=4.0,
+            dry_run=True,
+            avatar_lines=dummy_avatar_lines
+        )
 
 
 class TestGitHubAPIClient(unittest.TestCase):
@@ -116,7 +171,16 @@ class TestAutoFollowPipeline(unittest.TestCase):
         mock_follow_user
     ):
         # Authenticated user
-        mock_auth_user.return_value = {"login": "myuser", "name": "Me", "followers": 2, "following": 1}
+        mock_auth_user.return_value = {
+            "login": "myuser",
+            "name": "Me",
+            "bio": "Dev",
+            "followers": 2,
+            "following": 1,
+            "public_repos": 5,
+            "created_at": "2022-01-01T00:00:00Z",
+            "avatar_url": None
+        }
         # Target user
         mock_target_info.return_value = {"login": "influencer", "followers": 5}
 
