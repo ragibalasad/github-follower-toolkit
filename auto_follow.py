@@ -5,11 +5,14 @@ GitHub Auto-Follow Script (Dual CLI / Clean Interactive TUI Mode)
 Efficiently fetches followers of a target GitHub user and follows them
 only if they do not already follow the authenticated user and are not already followed.
 
-Modes:
-1. One-liner CLI: python3 auto_follow.py --target <user> [--max-follows 50] [--dry-run]
-2. Interactive TUI: python3 auto_follow.py
-   - Fastfetch card & single in-place status line above prompt
-   - 'set target <user>', 'set limit <n>', 'set dry-run <on|off>', 'run', 'run -v'
+Features:
+- Fastfetch/Neofetch TrueColor avatar banner & live stats
+- Micro-badge developer watermark (crafted by @ragibalasad)
+- Pre-fetched bulk caching for O(1) in-memory relationship checks
+- Primary rate-limit monitoring & auto-sleep
+- Secondary rate-limit (abuse detection) mitigation & exponential backoff
+- Single in-place status line above interactive prompt
+- Resumable state persistence (.follow_state.json)
 """
 
 import argparse
@@ -19,7 +22,7 @@ import json
 import os
 import random
 import re
-import readline  # Terminal command navigation and history
+import readline
 import signal
 import sys
 import time
@@ -72,6 +75,16 @@ def log_dim(msg: str) -> None:
 def strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences to compute visible string width."""
     return re.sub(r'\x1b\[[0-9;]*[mGKH]', '', text)
+
+def get_developer_watermark_divider(width: int = 70) -> str:
+    """Renders a subtle, clean micro-badge developer watermark divider."""
+    tag = " [crafted by @ragibalasad] "
+    tag_colored = f" {Colors.DIM}[crafted by {Colors.CYAN}@ragibalasad{Colors.RESET}{Colors.DIM}]{Colors.RESET} "
+    visible_tag_len = len(tag)
+    side_len = max(4, (width - visible_tag_len) // 2)
+    left_bar = f"{Colors.GRAY}{'─' * side_len}{Colors.RESET}"
+    right_bar = f"{Colors.GRAY}{'─' * (width - visible_tag_len - side_len)}{Colors.RESET}"
+    return f"  {left_bar}{tag_colored}{right_bar}"
 
 
 # ==============================================================================
@@ -252,6 +265,7 @@ def render_neofetch_banner(
         live_stats=live_stats
     )
     print("\n" + "\n".join(lines) + "\n")
+    print(get_developer_watermark_divider(68) + "\n")
 
 
 # ==============================================================================
@@ -323,7 +337,7 @@ class GitHubAPIClient:
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self.token}",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "github-fastfetch-auto-follow/1.0"
+            "User-Agent": "github-fastfetch-auto-follow/1.0 (@ragibalasad)"
         })
         self.rate_limit_limit = 5000
         self.rate_limit_remaining = 5000
@@ -580,7 +594,7 @@ class AutoFollowRunner:
         self.interrupted = True
 
     def _update_ui(self, auth_user: Dict[str, Any], target_info: Dict[str, Any], avatar_lines: List[str], status_text: str) -> None:
-        """In-place redraw for interactive mode: updates Fastfetch banner and single status line above prompt."""
+        """In-place redraw for interactive mode: updates Fastfetch banner, micro-badge, and status line."""
         if not self.interactive or self.verbose:
             return
 
@@ -598,6 +612,7 @@ class AutoFollowRunner:
             live_stats=self.stats
         )
         print("\n" + "\n".join(banner_lines) + "\n")
+        print(get_developer_watermark_divider(68) + "\n")
 
         pct = min(1.0, self.stats["followed_success"] / max(1, self.max_follows))
         bar_len = 20
@@ -618,11 +633,9 @@ class AutoFollowRunner:
         final_status = ""
 
         try:
-            # 1. Authenticated User Check
             auth_user = self.auth_user_cache or self.client.get_authenticated_user()
             auth_login = auth_user["login"]
 
-            # 2. Target User Validation
             target_info = self.client.get_user_info(self.target_username)
             if not target_info:
                 err_msg = f"{Colors.RED}Target user '@{self.target_username}' not found or inaccessible.{Colors.RESET}"
@@ -657,9 +670,9 @@ class AutoFollowRunner:
                     avatar_lines=avatar_lines
                 )
             else:
-                self._update_ui(auth_user, target_info, avatar_lines, f"{Colors.CYAN}Fetching your followers & following lists for caching...{Colors.RESET}")
+                self._update_ui(auth_user, target_info, avatar_lines, f"{Colors.CYAN}Fetching relationship cache...{Colors.RESET}")
 
-            # 3. Pre-fetch My Followers & Following in Bulk for O(1) in-memory checks
+            # Pre-fetch cache
             if not self.interactive or self.verbose:
                 print(f"{Colors.BOLD}── Step 1: Pre-fetching Relationship Cache ───────────────────────────{Colors.RESET}")
                 log_info(f"Fetching your followers (who follow @{auth_login})...")
@@ -677,7 +690,7 @@ class AutoFollowRunner:
                 print(f"\n{Colors.BOLD}── Step 2: Processing Followers & Filtering Candidates ───────────────{Colors.RESET}")
                 log_info(f"Starting pipeline (Session limit: {self.max_follows} follows, Delay: {self.delay_min:.1f}s-{self.delay_max:.1f}s)...")
 
-            # 4. Stream Target's Followers & Filter Candidates
+            # Stream target's followers
             for candidate in self.client.stream_target_followers(target_login):
                 if self.interrupted:
                     final_status = f"{Colors.YELLOW}Execution stopped by user (Ctrl+C). Followed {self.stats['followed_success']} users.{Colors.RESET}"
@@ -695,11 +708,9 @@ class AutoFollowRunner:
                 candidate_login = candidate["login"]
                 candidate_lower = candidate_login.lower()
 
-                # Rule 1: Do not follow yourself
                 if candidate_lower == auth_login.lower():
                     continue
 
-                # Rule 2: Do not follow if they already follow you
                 if candidate_lower in my_followers:
                     self.stats["skipped_already_follows_me"] += 1
                     status = f"{Colors.DIM}Skipped @{candidate_login} (Already follows you){Colors.RESET}"
@@ -708,7 +719,6 @@ class AutoFollowRunner:
                         log_dim(f"Skipped @{candidate_login} (Already follows you)")
                     continue
 
-                # Rule 3: Do not follow if you already follow them
                 if candidate_lower in my_following:
                     self.stats["skipped_already_following"] += 1
                     status = f"{Colors.DIM}Skipped @{candidate_login} (You already follow them){Colors.RESET}"
@@ -717,7 +727,6 @@ class AutoFollowRunner:
                         log_dim(f"Skipped @{candidate_login} (You already follow them)")
                     continue
 
-                # Rule 4: Do not follow if previously followed in state history
                 if self.state_mgr.is_previously_followed(candidate_login):
                     self.stats["skipped_state_history"] += 1
                     status = f"{Colors.DIM}Skipped @{candidate_login} (In local history cache){Colors.RESET}"
@@ -726,7 +735,6 @@ class AutoFollowRunner:
                         log_dim(f"Skipped @{candidate_login} (Recorded in local history)")
                     continue
 
-                # Candidate meets all criteria!
                 current_num = self.stats["followed_success"] + 1
                 user_url = candidate.get("html_url", f"https://github.com/{candidate_login}")
 
@@ -739,7 +747,6 @@ class AutoFollowRunner:
                     time.sleep(0.08)
                     continue
 
-                # Real follow execution
                 status_start = f"[{current_num}/{self.max_follows}] Following {Colors.BOLD}@{candidate_login}{Colors.RESET}..."
                 self._update_ui(auth_user, target_info, avatar_lines, status_start)
                 if not self.interactive or self.verbose:
@@ -797,7 +804,8 @@ class AutoFollowRunner:
         print(f" Skipped (State history):          {self.stats['skipped_state_history']}")
         print(f" Total Followed (All-Time Record): {self.state_mgr.state.get('total_followed_all_time', 0)}")
         print(f" Remaining API Quota:              {self.client.rate_limit_remaining}/{self.client.rate_limit_limit}")
-        print(f"{Colors.BOLD}{Colors.CYAN}══════════════════════════════════════════════════════════════════════{Colors.RESET}\n")
+        print(f"{Colors.BOLD}{Colors.CYAN}══════════════════════════════════════════════════════════════════════{Colors.RESET}")
+        print(get_developer_watermark_divider(68) + "\n")
 
 
 # ==============================================================================
@@ -836,7 +844,7 @@ class InteractiveSession:
             self.current_status = f"{Colors.RED}Initialization error: {e}{Colors.RESET}"
 
     def redraw_screen(self, status_msg: Optional[str] = None) -> None:
-        """Clears terminal and renders the Fastfetch card and the single status line."""
+        """Clears terminal and renders the Fastfetch card, watermark divider, and status line."""
         if status_msg is not None:
             self.current_status = status_msg
 
@@ -856,6 +864,7 @@ class InteractiveSession:
             avatar_lines=self.avatar_lines or OCTOCAT_FALLBACK_ASCII
         )
         print("\n" + "\n".join(banner_lines) + "\n")
+        print(get_developer_watermark_divider(68) + "\n")
         print(f"  {Colors.BOLD}[Status]{Colors.RESET} {self.current_status}\033[K")
 
     def print_help_screen(self) -> None:
@@ -1083,7 +1092,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    # Determine if we should start in interactive mode
     is_interactive = args.interactive or (len(sys.argv) == 1 and not args.target)
 
     token = args.token
