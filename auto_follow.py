@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """
-GitHub Auto-Follow Script
--------------------------
+GitHub Auto-Follow Script (Dual CLI / Interactive TUI Mode)
+-----------------------------------------------------------
 Efficiently fetches followers of a target GitHub user and follows them
 only if they do not already follow the authenticated user and are not already followed.
 
-Features:
-- Fastfetch/Neofetch style header with TrueColor avatar ANSI pixel art & stats
-- Pre-fetched bulk caching for O(1) in-memory relationship checks
-- Primary rate-limit monitoring & auto-sleep
-- Secondary rate-limit (abuse detection) mitigation & exponential backoff
-- Resumable state persistence (.follow_state.json)
-- Dry-run simulation mode
+Modes:
+1. One-liner CLI: python3 auto_follow.py --target <user> [--max-follows 50] [--dry-run]
+2. Interactive REPL: python3 auto_follow.py (with 'set target <user>', 'run', 'run -v', live in-place stats)
 """
 
 import argparse
@@ -21,11 +17,12 @@ import json
 import os
 import random
 import re
+import readline  # For interactive prompt history and arrow navigation
 import signal
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple
 
 import requests
 from dotenv import load_dotenv
@@ -107,13 +104,11 @@ def image_to_ansi_halfblocks(img_bytes: bytes, target_width: int = 24, target_he
         img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
         
         lines: List[str] = []
-        bg_r, bg_g, bg_b = 18, 20, 24 # Dark background blending
+        bg_r, bg_g, bg_b = 18, 20, 24
 
-        # Process 2 pixel rows at a time for each terminal line
         for y in range(0, target_height, 2):
             line_parts: List[str] = []
             for x in range(target_width):
-                # Top pixel (foreground)
                 r1, g1, b1, a1 = img.getpixel((x, y))
                 if a1 < 255:
                     alpha = a1 / 255.0
@@ -121,7 +116,6 @@ def image_to_ansi_halfblocks(img_bytes: bytes, target_width: int = 24, target_he
                     g1 = int(g1 * alpha + bg_g * (1 - alpha))
                     b1 = int(b1 * alpha + bg_b * (1 - alpha))
 
-                # Bottom pixel (background)
                 if y + 1 < target_height:
                     r2, g2, b2, a2 = img.getpixel((x, y + 1))
                     if a2 < 255:
@@ -132,7 +126,6 @@ def image_to_ansi_halfblocks(img_bytes: bytes, target_width: int = 24, target_he
                 else:
                     r2, g2, b2 = bg_r, bg_g, bg_b
 
-                # ANSI 24-bit TrueColor: \033[38;2;r;g;bm (fg) and \033[48;2;r;g;bm (bg)
                 line_parts.append(f"\033[38;2;{r1};{g1};{b1}m\033[48;2;{r2};{g2};{b2}m▀\033[0m")
             
             lines.append("".join(line_parts))
@@ -154,33 +147,37 @@ def fetch_avatar_ansi(avatar_url: Optional[str], session: requests.Session) -> L
         pass
     return OCTOCAT_FALLBACK_ASCII
 
-def render_neofetch_banner(
+def build_neofetch_lines(
     auth_user: Dict[str, Any],
-    target_info: Dict[str, Any],
+    target_info: Optional[Dict[str, Any]],
     api_remaining: int,
     api_limit: int,
     max_follows: int,
     delay_min: float,
     delay_max: float,
     dry_run: bool,
-    avatar_lines: List[str]
-) -> None:
-    """Renders a side-by-side Neofetch / Fastfetch banner with avatar and system stats."""
+    avatar_lines: List[str],
+    live_stats: Optional[Dict[str, int]] = None
+) -> List[str]:
+    """Builds the combined side-by-side Neofetch banner lines."""
     username = auth_user.get("login", "unknown")
     name = auth_user.get("name") or username
     bio = (auth_user.get("bio") or "GitHub Developer").replace("\n", " ").strip()
-    if len(bio) > 36:
-        bio = bio[:33] + "..."
+    if len(bio) > 34:
+        bio = bio[:31] + "..."
 
     followers = auth_user.get("followers", 0)
     following = auth_user.get("following", 0)
     public_repos = auth_user.get("public_repos", 0)
     created_year = auth_user.get("created_at", "2020")[:4]
 
-    target_user = target_info.get("login", "unknown")
-    target_followers = target_info.get("followers", 0)
+    if target_info:
+        target_user = target_info.get("login", "unknown")
+        target_followers = target_info.get("followers", 0)
+        target_str = f"{Colors.YELLOW}@{target_user}{Colors.RESET} {Colors.DIM}({target_followers:,} followers){Colors.RESET}"
+    else:
+        target_str = f"{Colors.RED}Not Set{Colors.RESET} {Colors.DIM}(use 'set target <user>'){Colors.RESET}"
 
-    # API quota styling
     api_pct = int((api_remaining / max(1, api_limit)) * 100)
     if api_pct > 50:
         quota_color = Colors.GREEN
@@ -202,27 +199,59 @@ def render_neofetch_banner(
         f"{Colors.BOLD}{Colors.WHITE}Bio:{Colors.RESET}        {Colors.DIM}{bio}{Colors.RESET}",
         f"{Colors.BOLD}{Colors.WHITE}Account:{Colors.RESET}    Joined {created_year} | {public_repos} Repos",
         f"{Colors.BOLD}{Colors.WHITE}Network:{Colors.RESET}    {Colors.GREEN}{followers}{Colors.RESET} Followers | {Colors.BLUE}{following}{Colors.RESET} Following",
-        f"{Colors.BOLD}{Colors.WHITE}Target:{Colors.RESET}     {Colors.YELLOW}@{target_user}{Colors.RESET} {Colors.DIM}({target_followers:,} followers){Colors.RESET}",
+        f"{Colors.BOLD}{Colors.WHITE}Target:{Colors.RESET}     {target_str}",
         f"{Colors.BOLD}{Colors.WHITE}API Quota:{Colors.RESET}  {quota_color}{api_remaining:,} / {api_limit:,} ({api_pct}%){Colors.RESET}",
         f"{Colors.BOLD}{Colors.WHITE}Safety:{Colors.RESET}     Pacing {delay_min:.1f}s–{delay_max:.1f}s | Limit: {max_follows}",
         f"{Colors.BOLD}{Colors.WHITE}Mode:{Colors.RESET}       {mode_badge}",
-        "",
-        # Fastfetch color dots strip
-        f" \033[90m●\033[0m \033[91m●\033[0m \033[92m●\033[0m \033[93m●\033[0m \033[94m●\033[0m \033[95m●\033[0m \033[96m●\033[0m \033[97m●\033[0m"
     ]
+
+    # If active live stats present, show live counter
+    if live_stats:
+        followed = live_stats.get("followed_success", 0)
+        examined = live_stats.get("total_examined", 0)
+        info_lines.append(f"{Colors.BOLD}{Colors.WHITE}Progress:{Colors.RESET}   {Colors.GREEN}{followed}/{max_follows} Followed{Colors.RESET} | {examined} Examined")
+    else:
+        info_lines.append(f" \033[90m●\033[0m \033[91m●\033[0m \033[92m●\033[0m \033[93m●\033[0m \033[94m●\033[0m \033[95m●\033[0m \033[96m●\033[0m \033[97m●\033[0m")
 
     total_rows = max(len(avatar_lines), len(info_lines))
     avatar_width = max(len(strip_ansi(line)) for line in avatar_lines) if avatar_lines else 24
 
-    print("\n")
+    output_lines = []
     for i in range(total_rows):
         left = avatar_lines[i] if i < len(avatar_lines) else " " * avatar_width
         left_pad = avatar_width - len(strip_ansi(left))
         left_str = left + (" " * max(0, left_pad))
 
         right = info_lines[i] if i < len(info_lines) else ""
-        print(f"  {left_str}   {right}")
-    print("\n")
+        output_lines.append(f"  {left_str}   {right}")
+
+    return output_lines
+
+def render_neofetch_banner(
+    auth_user: Dict[str, Any],
+    target_info: Optional[Dict[str, Any]],
+    api_remaining: int,
+    api_limit: int,
+    max_follows: int,
+    delay_min: float,
+    delay_max: float,
+    dry_run: bool,
+    avatar_lines: List[str],
+    live_stats: Optional[Dict[str, int]] = None
+) -> None:
+    lines = build_neofetch_lines(
+        auth_user=auth_user,
+        target_info=target_info,
+        api_remaining=api_remaining,
+        api_limit=api_limit,
+        max_follows=max_follows,
+        delay_min=delay_min,
+        delay_max=delay_max,
+        dry_run=dry_run,
+        avatar_lines=avatar_lines,
+        live_stats=live_stats
+    )
+    print("\n" + "\n".join(lines) + "\n")
 
 
 # ==============================================================================
@@ -300,6 +329,10 @@ class GitHubAPIClient:
         self.rate_limit_remaining = 5000
         self.rate_limit_reset = 0
 
+    def set_token(self, token: str) -> None:
+        self.token = token.strip()
+        self.session.headers["Authorization"] = f"Bearer {self.token}"
+
     def _update_rate_limit(self, response: requests.Response) -> None:
         headers = response.headers
         if "X-RateLimit-Limit" in headers:
@@ -347,7 +380,6 @@ class GitHubAPIClient:
                 )
                 self._update_rate_limit(response)
 
-                # Check for secondary rate limit (HTTP 403 or 429)
                 if response.status_code in (403, 429):
                     resp_json = {}
                     try:
@@ -371,12 +403,10 @@ class GitHubAPIClient:
                         retries += 1
                         continue
 
-                    # If bad credentials
                     if "bad credentials" in message:
                         log_error("Invalid GitHub Token. Please check your GITHUB_TOKEN permissions.")
                         sys.exit(1)
 
-                # 5xx Server errors - retry with backoff
                 if 500 <= response.status_code < 600:
                     log_warn(f"GitHub server error ({response.status_code}). Retrying in {backoff_delay:.1f}s...")
                     time.sleep(backoff_delay)
@@ -414,10 +444,7 @@ class GitHubAPIClient:
         return resp.json()
 
     def fetch_all_followers_set(self, username: Optional[str] = None) -> Set[str]:
-        """
-        Fetch all followers for a user using max page size (100) into a set of lowercase usernames.
-        If username is None, fetches for authenticated user (`/user/followers`).
-        """
+        """Fetch all followers for a user in bulk pages (100/page) into a lowercase set."""
         endpoint = "/user/followers" if username is None else f"/users/{username}/followers"
         followers: Set[str] = set()
         page = 1
@@ -443,7 +470,7 @@ class GitHubAPIClient:
         return followers
 
     def fetch_all_following_set(self) -> Set[str]:
-        """Fetch all accounts the authenticated user currently follows into a set."""
+        """Fetch all accounts the authenticated user currently follows into a lowercase set."""
         following: Set[str] = set()
         page = 1
 
@@ -468,9 +495,7 @@ class GitHubAPIClient:
         return following
 
     def stream_target_followers(self, username: str) -> Generator[Dict[str, Any], None, None]:
-        """
-        Stream target user's followers page by page (100 per request) lazily.
-        """
+        """Stream target user's followers page by page (100 per request) lazily."""
         endpoint = f"/users/{username}/followers"
         page = 1
 
@@ -493,10 +518,7 @@ class GitHubAPIClient:
             page += 1
 
     def follow_user(self, username: str) -> bool:
-        """
-        Follow a target user via PUT /user/following/{username}.
-        Returns True if followed successfully (HTTP 204), False otherwise.
-        """
+        """Follow a target user via PUT /user/following/{username}."""
         endpoint = f"/user/following/{username}"
         resp = self.request("PUT", endpoint)
         if resp.status_code in (204, 200):
@@ -521,7 +543,11 @@ class AutoFollowRunner:
         max_follows: int = 50,
         delay_min: float = 2.0,
         delay_max: float = 4.0,
-        dry_run: bool = False
+        dry_run: bool = False,
+        interactive: bool = False,
+        verbose: bool = False,
+        auth_user_cache: Optional[Dict[str, Any]] = None,
+        avatar_lines_cache: Optional[List[str]] = None
     ) -> None:
         self.client = client
         self.state_mgr = state_mgr
@@ -530,11 +556,11 @@ class AutoFollowRunner:
         self.delay_min = max(0.5, delay_min)
         self.delay_max = max(self.delay_min, delay_max)
         self.dry_run = dry_run
+        self.interactive = interactive
+        self.verbose = verbose
         self.interrupted = False
-
-        # Register graceful exit handlers
-        signal.signal(signal.SIGINT, self._handle_interrupt)
-        signal.signal(signal.SIGTERM, self._handle_interrupt)
+        self.auth_user_cache = auth_user_cache
+        self.avatar_lines_cache = avatar_lines_cache
 
         # Statistics
         self.stats = {
@@ -547,35 +573,16 @@ class AutoFollowRunner:
         }
 
     def _handle_interrupt(self, signum: int, frame: Any) -> None:
-        print("\n")
-        log_warn("Interrupt received! Safely finishing current task and saving state...")
+        if not self.interactive:
+            print("\n")
         self.interrupted = True
 
-    def run(self) -> None:
-        # 1. Authenticated User Check
-        auth_user = self.client.get_authenticated_user()
-        auth_login = auth_user["login"]
-
-        # 2. Target User Validation
-        target_info = self.client.get_user_info(self.target_username)
-        if not target_info:
-            log_error(f"Target user '@{self.target_username}' not found or inaccessible.")
-            return
-
-        target_login = target_info["login"]
-        target_follower_count = target_info.get("followers", 0)
-
-        if target_login.lower() == auth_login.lower():
-            log_error("Target user cannot be yourself!")
-            return
-
-        if target_follower_count == 0:
-            log_warn(f"Target user '@{target_login}' has 0 followers. Nothing to do.")
-            return
-
-        # Fetch Avatar and render Fastfetch Banner
-        avatar_lines = fetch_avatar_ansi(auth_user.get("avatar_url"), self.client.session)
-        render_neofetch_banner(
+    def _redraw_live_dashboard(self, auth_user: Dict[str, Any], target_info: Dict[str, Any], avatar_lines: List[str], status_line: str) -> None:
+        """In-place redraw for interactive mode."""
+        # Clear screen and jump cursor to top
+        sys.stdout.write("\033[2J\033[H")
+        
+        banner_lines = build_neofetch_lines(
             auth_user=auth_user,
             target_info=target_info,
             api_remaining=self.client.rate_limit_remaining,
@@ -584,90 +591,197 @@ class AutoFollowRunner:
             delay_min=self.delay_min,
             delay_max=self.delay_max,
             dry_run=self.dry_run,
-            avatar_lines=avatar_lines
+            avatar_lines=avatar_lines,
+            live_stats=self.stats
         )
+        print("\n" + "\n".join(banner_lines) + "\n")
 
-        # 3. Pre-fetch My Followers & Following in Bulk for O(1) in-memory checks
-        print(f"{Colors.BOLD}── Step 1: Pre-fetching Relationship Cache ───────────────────────────{Colors.RESET}")
-        log_info(f"Fetching your followers (who follow @{auth_login})...")
-        my_followers = self.client.fetch_all_followers_set()
-        log_success(f"Cached {len(my_followers)} follower(s) who follow you.")
+        # Progress bar calculation
+        pct = min(1.0, self.stats["followed_success"] / max(1, self.max_follows))
+        bar_len = 24
+        filled = int(bar_len * pct)
+        bar = f"{Colors.GREEN}{'█' * filled}{Colors.GRAY}{'░' * (bar_len - filled)}{Colors.RESET}"
+        
+        print(f"  {Colors.BOLD}Live Progress:{Colors.RESET} [{bar}] {self.stats['followed_success']}/{self.max_follows} ({int(pct * 100)}%)")
+        print(f"  {Colors.BOLD}Examined:{Colors.RESET} {self.stats['total_examined']} | {Colors.YELLOW}Skipped (Follows you):{Colors.RESET} {self.stats['skipped_already_follows_me']} | {Colors.BLUE}Skipped (Following):{Colors.RESET} {self.stats['skipped_already_following']} | {Colors.GRAY}History:{Colors.RESET} {self.stats['skipped_state_history']}")
+        print(f"  {Colors.BOLD}Status:{Colors.RESET} {status_line}\033[K\n")
+        sys.stdout.flush()
 
-        log_info(f"Fetching your following list (who you already follow)...")
-        my_following = self.client.fetch_all_following_set()
-        log_success(f"Cached {len(my_following)} account(s) you already follow.")
+    def run(self) -> None:
+        # Register interrupt handlers for this run
+        old_sigint = signal.getsignal(signal.SIGINT)
+        old_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGINT, self._handle_interrupt)
+        signal.signal(signal.SIGTERM, self._handle_interrupt)
 
-        # 4. Stream Target's Followers & Filter Candidates
-        print(f"\n{Colors.BOLD}── Step 2: Processing Followers & Filtering Candidates ───────────────{Colors.RESET}")
-        log_info(f"Starting pipeline (Session limit: {self.max_follows} follows, Delay: {self.delay_min:.1f}s-{self.delay_max:.1f}s)...")
+        try:
+            # 1. Authenticated User Check
+            auth_user = self.auth_user_cache or self.client.get_authenticated_user()
+            auth_login = auth_user["login"]
 
-        for candidate in self.client.stream_target_followers(target_login):
-            if self.interrupted:
-                break
+            # 2. Target User Validation
+            target_info = self.client.get_user_info(self.target_username)
+            if not target_info:
+                log_error(f"Target user '@{self.target_username}' not found or inaccessible.")
+                return
 
-            if self.stats["followed_success"] >= self.max_follows:
-                log_info(f"Reached target follow limit of {self.max_follows} for this session.")
-                break
+            target_login = target_info["login"]
+            target_follower_count = target_info.get("followers", 0)
 
-            self.stats["total_examined"] += 1
-            candidate_login = candidate["login"]
-            candidate_lower = candidate_login.lower()
+            if target_login.lower() == auth_login.lower():
+                log_error("Target user cannot be yourself!")
+                return
 
-            # Rule 1: Do not follow yourself
-            if candidate_lower == auth_login.lower():
-                continue
+            if target_follower_count == 0:
+                log_warn(f"Target user '@{target_login}' has 0 followers. Nothing to do.")
+                return
 
-            # Rule 2: Do not follow if they already follow you
-            if candidate_lower in my_followers:
-                self.stats["skipped_already_follows_me"] += 1
-                if self.client.verbose:
-                    log_dim(f"Skipped @{candidate_login} (Already follows you)")
-                continue
+            # Avatar lines
+            avatar_lines = self.avatar_lines_cache or fetch_avatar_ansi(auth_user.get("avatar_url"), self.client.session)
 
-            # Rule 3: Do not follow if you already follow them
-            if candidate_lower in my_following:
-                self.stats["skipped_already_following"] += 1
-                if self.client.verbose:
-                    log_dim(f"Skipped @{candidate_login} (You already follow them)")
-                continue
-
-            # Rule 4: Do not follow if previously followed in state history
-            if self.state_mgr.is_previously_followed(candidate_login):
-                self.stats["skipped_state_history"] += 1
-                if self.client.verbose:
-                    log_dim(f"Skipped @{candidate_login} (Recorded in local history)")
-                continue
-
-            # Candidate meets all criteria!
-            current_num = self.stats["followed_success"] + 1
-            user_url = candidate.get("html_url", f"https://github.com/{candidate_login}")
-
-            if self.dry_run:
-                log_info(f"{Colors.MAGENTA}[DRY RUN]{Colors.RESET} [{current_num}/{self.max_follows}] Would follow {Colors.BOLD}@{candidate_login}{Colors.RESET} ({user_url})")
-                self.stats["followed_success"] += 1
-                time.sleep(0.05)
-                continue
-
-            # Real follow execution
-            log_info(f"[{current_num}/{self.max_follows}] Following {Colors.BOLD}@{candidate_login}{Colors.RESET} ({user_url})...")
-            success = self.client.follow_user(candidate_login)
-
-            if success:
-                self.stats["followed_success"] += 1
-                self.state_mgr.record_follow(candidate_login)
-                my_following.add(candidate_lower)
-                log_success(f"Successfully followed @{candidate_login}!")
-
-                # Pacing delay with random jitter to prevent secondary rate limits
-                if self.stats["followed_success"] < self.max_follows:
-                    sleep_time = random.uniform(self.delay_min, self.delay_max)
-                    log_dim(f"Pacing delay: sleeping {sleep_time:.2f}s...")
-                    time.sleep(sleep_time)
+            # In CLI mode or verbose mode, print full banner first
+            if not self.interactive or self.verbose:
+                render_neofetch_banner(
+                    auth_user=auth_user,
+                    target_info=target_info,
+                    api_remaining=self.client.rate_limit_remaining,
+                    api_limit=self.client.rate_limit_limit,
+                    max_follows=self.max_follows,
+                    delay_min=self.delay_min,
+                    delay_max=self.delay_max,
+                    dry_run=self.dry_run,
+                    avatar_lines=avatar_lines
+                )
             else:
-                self.stats["followed_failed"] += 1
+                self._redraw_live_dashboard(auth_user, target_info, avatar_lines, f"{Colors.CYAN}Initializing relationship cache...{Colors.RESET}")
 
-        # 5. Print Execution Summary
-        self._print_summary()
+            # 3. Pre-fetch My Followers & Following in Bulk for O(1) in-memory checks
+            if not self.interactive or self.verbose:
+                print(f"{Colors.BOLD}── Step 1: Pre-fetching Relationship Cache ───────────────────────────{Colors.RESET}")
+                log_info(f"Fetching your followers (who follow @{auth_login})...")
+            
+            my_followers = self.client.fetch_all_followers_set()
+            
+            if not self.interactive or self.verbose:
+                log_success(f"Cached {len(my_followers)} follower(s) who follow you.")
+                log_info(f"Fetching your following list (who you already follow)...")
+            
+            my_following = self.client.fetch_all_following_set()
+            
+            if not self.interactive or self.verbose:
+                log_success(f"Cached {len(my_following)} account(s) you already follow.")
+                print(f"\n{Colors.BOLD}── Step 2: Processing Followers & Filtering Candidates ───────────────{Colors.RESET}")
+                log_info(f"Starting pipeline (Session limit: {self.max_follows} follows, Delay: {self.delay_min:.1f}s-{self.delay_max:.1f}s)...")
+
+            # 4. Stream Target's Followers & Filter Candidates
+            for candidate in self.client.stream_target_followers(target_login):
+                if self.interrupted:
+                    if self.interactive:
+                        self._redraw_live_dashboard(auth_user, target_info, avatar_lines, f"{Colors.YELLOW}Run interrupted by user. Safely stopping...{Colors.RESET}")
+                    break
+
+                if self.stats["followed_success"] >= self.max_follows:
+                    if self.interactive and not self.verbose:
+                        self._redraw_live_dashboard(auth_user, target_info, avatar_lines, f"{Colors.GREEN}Reached session limit ({self.max_follows} follows). Complete!{Colors.RESET}")
+                    else:
+                        log_info(f"Reached target follow limit of {self.max_follows} for this session.")
+                    break
+
+                self.stats["total_examined"] += 1
+                candidate_login = candidate["login"]
+                candidate_lower = candidate_login.lower()
+
+                # Rule 1: Do not follow yourself
+                if candidate_lower == auth_login.lower():
+                    continue
+
+                # Rule 2: Do not follow if they already follow you
+                if candidate_lower in my_followers:
+                    self.stats["skipped_already_follows_me"] += 1
+                    status = f"{Colors.YELLOW}Skipped @{candidate_login} (Already follows you){Colors.RESET}"
+                    if self.interactive and not self.verbose:
+                        self._redraw_live_dashboard(auth_user, target_info, avatar_lines, status)
+                    elif self.verbose:
+                        log_dim(f"Skipped @{candidate_login} (Already follows you)")
+                    continue
+
+                # Rule 3: Do not follow if you already follow them
+                if candidate_lower in my_following:
+                    self.stats["skipped_already_following"] += 1
+                    status = f"{Colors.BLUE}Skipped @{candidate_login} (You already follow them){Colors.RESET}"
+                    if self.interactive and not self.verbose:
+                        self._redraw_live_dashboard(auth_user, target_info, avatar_lines, status)
+                    elif self.verbose:
+                        log_dim(f"Skipped @{candidate_login} (You already follow them)")
+                    continue
+
+                # Rule 4: Do not follow if previously followed in state history
+                if self.state_mgr.is_previously_followed(candidate_login):
+                    self.stats["skipped_state_history"] += 1
+                    status = f"{Colors.GRAY}Skipped @{candidate_login} (In local history cache){Colors.RESET}"
+                    if self.interactive and not self.verbose:
+                        self._redraw_live_dashboard(auth_user, target_info, avatar_lines, status)
+                    elif self.verbose:
+                        log_dim(f"Skipped @{candidate_login} (Recorded in local history)")
+                    continue
+
+                # Candidate meets all criteria!
+                current_num = self.stats["followed_success"] + 1
+                user_url = candidate.get("html_url", f"https://github.com/{candidate_login}")
+
+                if self.dry_run:
+                    self.stats["followed_success"] += 1
+                    status = f"{Colors.MAGENTA}[DRY RUN]{Colors.RESET} [{current_num}/{self.max_follows}] Would follow {Colors.BOLD}@{candidate_login}{Colors.RESET}"
+                    if self.interactive and not self.verbose:
+                        self._redraw_live_dashboard(auth_user, target_info, avatar_lines, status)
+                    else:
+                        log_info(f"{Colors.MAGENTA}[DRY RUN]{Colors.RESET} [{current_num}/{self.max_follows}] Would follow {Colors.BOLD}@{candidate_login}{Colors.RESET} ({user_url})")
+                    time.sleep(0.08)
+                    continue
+
+                # Real follow execution
+                status_start = f"[{current_num}/{self.max_follows}] Sending follow request to {Colors.BOLD}@{candidate_login}{Colors.RESET}..."
+                if self.interactive and not self.verbose:
+                    self._redraw_live_dashboard(auth_user, target_info, avatar_lines, status_start)
+                else:
+                    log_info(f"[{current_num}/{self.max_follows}] Following {Colors.BOLD}@{candidate_login}{Colors.RESET} ({user_url})...")
+                
+                success = self.client.follow_user(candidate_login)
+
+                if success:
+                    self.stats["followed_success"] += 1
+                    self.state_mgr.record_follow(candidate_login)
+                    my_following.add(candidate_lower)
+                    
+                    sleep_time = random.uniform(self.delay_min, self.delay_max)
+                    status_done = f"{Colors.GREEN}[SUCCESS]{Colors.RESET} Followed {Colors.BOLD}@{candidate_login}{Colors.RESET}! (Pacing: sleeping {sleep_time:.2f}s)"
+                    
+                    if self.interactive and not self.verbose:
+                        self._redraw_live_dashboard(auth_user, target_info, avatar_lines, status_done)
+                    else:
+                        log_success(f"Successfully followed @{candidate_login}!")
+                        log_dim(f"Pacing delay: sleeping {sleep_time:.2f}s...")
+
+                    if self.stats["followed_success"] < self.max_follows:
+                        # Sleep in small slices to respond promptly to SIGINT
+                        end_sleep = time.time() + sleep_time
+                        while time.time() < end_sleep:
+                            if self.interrupted:
+                                break
+                            time.sleep(0.1)
+                else:
+                    self.stats["followed_failed"] += 1
+                    status_err = f"{Colors.RED}[FAILED]{Colors.RESET} Could not follow @{candidate_login}"
+                    if self.interactive and not self.verbose:
+                        self._redraw_live_dashboard(auth_user, target_info, avatar_lines, status_err)
+
+            # 5. Print Final Summary
+            self._print_summary()
+
+        finally:
+            signal.signal(signal.SIGINT, old_sigint)
+            signal.signal(signal.SIGTERM, old_sigterm)
+            self.state_mgr.save()
 
     def _print_summary(self) -> None:
         print(f"\n{Colors.BOLD}{Colors.CYAN}══════════════════════════════════════════════════════════════════════{Colors.RESET}")
@@ -686,7 +800,207 @@ class AutoFollowRunner:
 
 
 # ==============================================================================
-# CLI Entry Point
+# Interactive REPL Environment
+# ==============================================================================
+
+class InteractiveSession:
+    """Manages the interactive command-line environment."""
+
+    def __init__(self, token: str, default_target: Optional[str] = None) -> None:
+        self.token = token
+        self.client = GitHubAPIClient(token=self.token)
+        self.state_mgr = StateManager()
+
+        self.target_username = default_target
+        self.target_info: Optional[Dict[str, Any]] = None
+        self.max_follows = 50
+        self.delay_min = 2.0
+        self.delay_max = 4.0
+        self.dry_run = False
+        self.state_file = ".follow_state.json"
+
+        # Cached profile & avatar
+        self.auth_user: Optional[Dict[str, Any]] = None
+        self.avatar_lines: Optional[List[str]] = None
+
+    def initialize(self) -> None:
+        """Initial check of user and target."""
+        try:
+            self.auth_user = self.client.get_authenticated_user()
+            self.avatar_lines = fetch_avatar_ansi(self.auth_user.get("avatar_url"), self.client.session)
+            if self.target_username:
+                self.target_info = self.client.get_user_info(self.target_username)
+        except Exception as e:
+            log_error(f"Initialization error: {e}")
+
+    def display_banner(self) -> None:
+        """Render the Fastfetch card."""
+        if not self.auth_user:
+            return
+        render_neofetch_banner(
+            auth_user=self.auth_user,
+            target_info=self.target_info,
+            api_remaining=self.client.rate_limit_remaining,
+            api_limit=self.client.rate_limit_limit,
+            max_follows=self.max_follows,
+            delay_min=self.delay_min,
+            delay_max=self.delay_max,
+            dry_run=self.dry_run,
+            avatar_lines=self.avatar_lines or OCTOCAT_FALLBACK_ASCII
+        )
+
+    def print_help(self) -> None:
+        print(f"\n{Colors.BOLD}{Colors.CYAN}Available Interactive Commands:{Colors.RESET}")
+        print(f"  {Colors.GREEN}set target <username>{Colors.RESET}     Set the target user whose followers to extract")
+        print(f"  {Colors.GREEN}set limit <num>{Colors.RESET}           Set max follows for session (e.g., set limit 30)")
+        print(f"  {Colors.GREEN}set delay <min> <max>{Colors.RESET}     Set pacing delay range in seconds (e.g., set delay 2.5 5.0)")
+        print(f"  {Colors.GREEN}set dry-run <on|off>{Colors.RESET}      Toggle dry-run simulation mode")
+        print(f"  {Colors.GREEN}set token <token>{Colors.RESET}         Update GitHub PAT token")
+        print(f"  {Colors.GREEN}show{Colors.RESET} / {Colors.GREEN}status{Colors.RESET}              Refresh and display current Fastfetch profile & stats")
+        print(f"  {Colors.GREEN}clear-state{Colors.RESET}               Reset local followed history cache (.follow_state.json)")
+        print(f"  {Colors.GREEN}run{Colors.RESET}                       Start execution with real-time in-place dashboard")
+        print(f"  {Colors.GREEN}run -v{Colors.RESET} / {Colors.GREEN}run --verbose{Colors.RESET}    Start execution with full streaming verbose logs")
+        print(f"  {Colors.GREEN}help{Colors.RESET} / {Colors.GREEN}?{Colors.RESET}                   Show this help menu")
+        print(f"  {Colors.GREEN}exit{Colors.RESET} / {Colors.GREEN}quit{Colors.RESET}               Exit the program\n")
+
+    def handle_command(self, cmd_line: str) -> bool:
+        """Processes an interactive command. Returns True to continue, False to exit."""
+        parts = cmd_line.strip().split()
+        if not parts:
+            return True
+
+        cmd = parts[0].lower()
+        args = parts[1:]
+
+        if cmd in ("exit", "quit", "q"):
+            print(f"{Colors.CYAN}Goodbye! 👋{Colors.RESET}")
+            return False
+
+        elif cmd in ("help", "?"):
+            self.print_help()
+
+        elif cmd in ("show", "status", "info"):
+            self.display_banner()
+
+        elif cmd == "clear-state":
+            self.state_mgr.clear()
+            log_success("Local history state cleared.")
+
+        elif cmd == "set":
+            if not args:
+                log_warn("Usage: set <target|limit|delay|dry-run|token> <value>")
+                return True
+
+            sub = args[0].lower()
+            val_args = args[1:]
+
+            if sub in ("target", "user", "-t"):
+                if not val_args:
+                    log_warn("Usage: set target <username>")
+                else:
+                    new_target = val_args[0].lstrip("@")
+                    log_info(f"Looking up GitHub user '@{new_target}'...")
+                    info = self.client.get_user_info(new_target)
+                    if info:
+                        self.target_username = new_target
+                        self.target_info = info
+                        log_success(f"Target set to @{new_target} ({info.get('followers', 0):,} followers).")
+                    else:
+                        log_error(f"User '@{new_target}' not found.")
+
+            elif sub in ("limit", "max", "max-follows", "-m"):
+                if not val_args:
+                    log_warn("Usage: set limit <number>")
+                else:
+                    try:
+                        self.max_follows = max(1, int(val_args[0]))
+                        log_success(f"Session limit set to {self.max_follows} follows.")
+                    except ValueError:
+                        log_error("Invalid number.")
+
+            elif sub in ("delay", "pacing"):
+                if len(val_args) == 1:
+                    try:
+                        d = float(val_args[0])
+                        self.delay_min = d
+                        self.delay_max = d + 2.0
+                        log_success(f"Pacing delay set to {self.delay_min:.1f}s–{self.delay_max:.1f}s.")
+                    except ValueError:
+                        log_error("Invalid delay number.")
+                elif len(val_args) >= 2:
+                    try:
+                        self.delay_min = float(val_args[0])
+                        self.delay_max = float(val_args[1])
+                        log_success(f"Pacing delay set to {self.delay_min:.1f}s–{self.delay_max:.1f}s.")
+                    except ValueError:
+                        log_error("Invalid delay numbers.")
+
+            elif sub in ("dry-run", "dryrun"):
+                if not val_args:
+                    self.dry_run = not self.dry_run
+                else:
+                    self.dry_run = val_args[0].lower() in ("true", "1", "yes", "on", "enable")
+                log_success(f"Dry-run mode: {'ENABLED (Simulation)' if self.dry_run else 'DISABLED (Live)'}.")
+
+            elif sub == "token":
+                if not val_args:
+                    log_warn("Usage: set token <token>")
+                else:
+                    self.token = val_args[0]
+                    self.client.set_token(self.token)
+                    self.initialize()
+                    log_success("GitHub Token updated & profile reloaded.")
+
+            else:
+                log_warn(f"Unknown setting '{sub}'. Type 'help' for options.")
+
+        elif cmd == "run":
+            if not self.target_username:
+                log_error("No target user set! Use 'set target <username>' first.")
+                return True
+
+            verbose = ("-v" in args or "--verbose" in args)
+            runner = AutoFollowRunner(
+                client=self.client,
+                state_mgr=self.state_mgr,
+                target_username=self.target_username,
+                max_follows=self.max_follows,
+                delay_min=self.delay_min,
+                delay_max=self.delay_max,
+                dry_run=self.dry_run,
+                interactive=True,
+                verbose=verbose,
+                auth_user_cache=self.auth_user,
+                avatar_lines_cache=self.avatar_lines
+            )
+            runner.run()
+
+        else:
+            log_warn(f"Unknown command '{cmd}'. Type 'help' for list of commands.")
+
+        return True
+
+    def start_repl(self) -> None:
+        """Starts the interactive prompt loop."""
+        self.initialize()
+        sys.stdout.write("\033[2J\033[H")  # Clean screen
+        self.display_banner()
+        print(f" {Colors.DIM}Type {Colors.GREEN}'help'{Colors.RESET}{Colors.DIM} for commands, {Colors.GREEN}'run'{Colors.RESET}{Colors.DIM} to execute, or {Colors.GREEN}'exit'{Colors.RESET}{Colors.DIM} to quit.{Colors.RESET}\n")
+
+        while True:
+            try:
+                prompt_str = f"{Colors.BOLD}{Colors.CYAN}github-follow{Colors.RESET} {Colors.GRAY}❯{Colors.RESET} "
+                cmd_line = input(prompt_str)
+                should_continue = self.handle_command(cmd_line)
+                if not should_continue:
+                    break
+            except (KeyboardInterrupt, EOFError):
+                print(f"\n{Colors.CYAN}Exiting... Goodbye! 👋{Colors.RESET}")
+                break
+
+
+# ==============================================================================
+# CLI Argument Parser & Entry Point
 # ==============================================================================
 
 def parse_args() -> argparse.Namespace:
@@ -699,7 +1013,7 @@ def parse_args() -> argparse.Namespace:
         "-t", "--target",
         type=str,
         default=os.getenv("GITHUB_TARGET_USER"),
-        help="Target GitHub username whose followers will be extracted (or set GITHUB_TARGET_USER in .env)."
+        help="Target GitHub username whose followers will be extracted."
     )
     parser.add_argument(
         "--token",
@@ -731,6 +1045,11 @@ def parse_args() -> argparse.Namespace:
         help="Run without making actual follow mutations (simulates filtering and actions)."
     )
     parser.add_argument(
+        "-i", "--interactive",
+        action="store_true",
+        help="Start in interactive command REPL mode."
+    )
+    parser.add_argument(
         "--state-file",
         type=str,
         default=".follow_state.json",
@@ -753,17 +1072,37 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    if not args.token:
-        log_error("GitHub Token is required! Provide it via --token or GITHUB_TOKEN in .env")
-        print(f"\n{Colors.BOLD}How to create a GitHub token:{Colors.RESET}")
-        print(" 1. Go to https://github.com/settings/tokens")
-        print(" 2. Generate a Classic Token with scope 'user:follow', or a Fine-grained token with Follow (Read & Write)")
-        print(" 3. Put it in .env file as: GITHUB_TOKEN=ghp_xxx")
-        print(" 4. Or pass it directly: python auto_follow.py --target <user> --token <token>\n")
-        sys.exit(1)
+    # Determine if we should start in interactive mode
+    # If no target specified and not explicitly told to run non-interactively, or -i passed -> interactive mode
+    is_interactive = args.interactive or (len(sys.argv) == 1 and not args.target)
 
+    token = args.token
+    if not token:
+        if is_interactive:
+            print(f"\n{Colors.BOLD}{Colors.YELLOW}GitHub Personal Access Token not found in .env!{Colors.RESET}")
+            try:
+                token = input("Enter GITHUB_TOKEN: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                sys.exit(0)
+        
+        if not token:
+            log_error("GitHub Token is required! Provide it via --token or GITHUB_TOKEN in .env")
+            print(f"\n{Colors.BOLD}How to create a GitHub token:{Colors.RESET}")
+            print(" 1. Go to https://github.com/settings/tokens")
+            print(" 2. Generate a Classic Token with scope 'user:follow', or a Fine-grained token with Follow (Read & Write)")
+            print(" 3. Put it in .env file as: GITHUB_TOKEN=ghp_xxx\n")
+            sys.exit(1)
+
+    if is_interactive:
+        session = InteractiveSession(token=token, default_target=args.target)
+        if args.clear_state:
+            session.state_mgr.clear()
+        session.start_repl()
+        return
+
+    # Non-interactive / One-line CLI Mode
     if not args.target:
-        log_error("Target GitHub username is required! Provide it via --target or GITHUB_TARGET_USER in .env")
+        log_error("Target GitHub username is required in CLI mode! Use --target <username> or run interactively.")
         sys.exit(1)
 
     state_mgr = StateManager(state_file=args.state_file)
@@ -772,7 +1111,7 @@ def main() -> None:
         state_mgr.clear()
         log_success("State cleared.")
 
-    client = GitHubAPIClient(token=args.token, verbose=args.verbose)
+    client = GitHubAPIClient(token=token, verbose=args.verbose)
     runner = AutoFollowRunner(
         client=client,
         state_mgr=state_mgr,
@@ -780,7 +1119,9 @@ def main() -> None:
         max_follows=args.max_follows,
         delay_min=args.delay_min,
         delay_max=args.delay_max,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        interactive=False,
+        verbose=args.verbose
     )
 
     try:

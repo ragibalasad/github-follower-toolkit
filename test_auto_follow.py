@@ -2,7 +2,7 @@
 """
 Unit tests for GitHub Auto-Follow Script.
 Tests filtering logic, rate-limit headers handling, state management, retry backoff,
-and Fastfetch/Neofetch ANSI avatar banner rendering.
+Fastfetch/Neofetch ANSI avatar banner rendering, and Interactive REPL session commands.
 """
 
 import io
@@ -18,6 +18,7 @@ from PIL import Image
 from auto_follow import (
     AutoFollowRunner,
     GitHubAPIClient,
+    InteractiveSession,
     StateManager,
     image_to_ansi_halfblocks,
     render_neofetch_banner,
@@ -60,14 +61,13 @@ class TestStateManager(unittest.TestCase):
 
 class TestAvatarAndBanner(unittest.TestCase):
     def test_image_to_ansi_halfblocks(self):
-        # Create a simple 24x24 RGB image in memory
         img = Image.new("RGBA", (24, 24), color=(255, 0, 0, 255))
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         img_bytes = buf.getvalue()
 
         lines = image_to_ansi_halfblocks(img_bytes, target_width=24, target_height=24)
-        self.assertEqual(len(lines), 12)  # 24 height / 2 = 12 terminal rows
+        self.assertEqual(len(lines), 12)
         for line in lines:
             stripped = strip_ansi(line)
             self.assertEqual(len(stripped), 24)
@@ -88,7 +88,6 @@ class TestAvatarAndBanner(unittest.TestCase):
         }
         dummy_avatar_lines = ["▀" * 24] * 12
 
-        # Ensure render_neofetch_banner executes without error
         render_neofetch_banner(
             auth_user=auth_user,
             target_info=target_info,
@@ -100,6 +99,49 @@ class TestAvatarAndBanner(unittest.TestCase):
             dry_run=True,
             avatar_lines=dummy_avatar_lines
         )
+
+
+class TestInteractiveSession(unittest.TestCase):
+    @patch.object(GitHubAPIClient, "get_user_info")
+    @patch.object(GitHubAPIClient, "get_authenticated_user")
+    def test_interactive_commands(self, mock_auth_user, mock_user_info):
+        mock_auth_user.return_value = {
+            "login": "myuser",
+            "name": "Me",
+            "followers": 10,
+            "following": 5,
+            "public_repos": 3,
+            "created_at": "2022-01-01T00:00:00Z"
+        }
+        mock_user_info.return_value = {"login": "octocat", "followers": 1000}
+
+        session = InteractiveSession(token="mock_token")
+        session.initialize()
+
+        # Test set target
+        session.handle_command("set target octocat")
+        self.assertEqual(session.target_username, "octocat")
+        self.assertIsNotNone(session.target_info)
+
+        # Test set limit
+        session.handle_command("set limit 75")
+        self.assertEqual(session.max_follows, 75)
+
+        # Test set delay
+        session.handle_command("set delay 3.0 6.0")
+        self.assertEqual(session.delay_min, 3.0)
+        self.assertEqual(session.delay_max, 6.0)
+
+        # Test set dry-run
+        session.handle_command("set dry-run on")
+        self.assertTrue(session.dry_run)
+
+        session.handle_command("set dry-run off")
+        self.assertFalse(session.dry_run)
+
+        # Test exit
+        cont = session.handle_command("exit")
+        self.assertFalse(cont)
 
 
 class TestGitHubAPIClient(unittest.TestCase):
@@ -170,7 +212,6 @@ class TestAutoFollowPipeline(unittest.TestCase):
         mock_stream_target,
         mock_follow_user
     ):
-        # Authenticated user
         mock_auth_user.return_value = {
             "login": "myuser",
             "name": "Me",
@@ -181,27 +222,19 @@ class TestAutoFollowPipeline(unittest.TestCase):
             "created_at": "2022-01-01T00:00:00Z",
             "avatar_url": None
         }
-        # Target user
         mock_target_info.return_value = {"login": "influencer", "followers": 5}
-
-        # Authenticated user's followers (people who follow me) -> MUST NOT FOLLOW
         mock_fetch_followers.return_value = {"follower_one", "follower_two"}
-
-        # Authenticated user is already following -> MUST SKIP
         mock_fetch_following.return_value = {"already_followed_friend"}
-
-        # State history has one user already followed in a past run -> MUST SKIP
         self.state_mgr.record_follow("past_followed_user")
 
-        # Target user's followers
         mock_stream_target.return_value = [
-            {"login": "myuser"},                # 1. Myself (skip)
-            {"login": "follower_one"},          # 2. Already follows me (skip)
-            {"login": "already_followed_friend"},# 3. Already following (skip)
-            {"login": "past_followed_user"},    # 4. In state history (skip)
-            {"login": "new_lead_1"},            # 5. VALID candidate -> FOLLOW
-            {"login": "new_lead_2"},            # 6. VALID candidate -> FOLLOW
-            {"login": "new_lead_3"}             # 7. Exceeds max_follows (if max=2)
+            {"login": "myuser"},
+            {"login": "follower_one"},
+            {"login": "already_followed_friend"},
+            {"login": "past_followed_user"},
+            {"login": "new_lead_1"},
+            {"login": "new_lead_2"},
+            {"login": "new_lead_3"}
         ]
 
         mock_follow_user.return_value = True
@@ -213,7 +246,8 @@ class TestAutoFollowPipeline(unittest.TestCase):
             max_follows=2,
             delay_min=0.01,
             delay_max=0.02,
-            dry_run=False
+            dry_run=False,
+            interactive=False
         )
 
         runner.run()
@@ -223,12 +257,10 @@ class TestAutoFollowPipeline(unittest.TestCase):
         self.assertEqual(runner.stats["skipped_already_following"], 1)
         self.assertEqual(runner.stats["skipped_state_history"], 1)
 
-        # Verify calls to follow
         self.assertEqual(mock_follow_user.call_count, 2)
         mock_follow_user.assert_any_call("new_lead_1")
         mock_follow_user.assert_any_call("new_lead_2")
 
-        # Verify state updated
         self.assertTrue(self.state_mgr.is_previously_followed("new_lead_1"))
         self.assertTrue(self.state_mgr.is_previously_followed("new_lead_2"))
 
