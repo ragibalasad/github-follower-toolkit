@@ -1,2 +1,7 @@
 .env
-followed_users.json
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.follow_state.json
+.DS_Store
