@@ -64,9 +64,23 @@ def exit_alternate_screen() -> None:
     sys.stdout.flush()
 
 
-def purge_screen_and_home() -> None:
-    """Moves cursor to row 1 col 1, clears entire visible viewport, and purges scrollback buffer."""
-    sys.stdout.write("\033[H\033[2J\033[3J")
+def render_frame_in_place(renderable: Any, show_cursor: bool = False) -> None:
+    """
+    Renders a Rich renderable directly to stdout in a single atomic write.
+    Uses cursor-home (\033[H) + line-clear (\033[K) on every line to overwrite in place
+    with ZERO blank-frame flicker, stuttering, residual ghost characters, or scrollback pollution.
+    """
+    buf = io.StringIO()
+    render_console = Console(file=buf, force_terminal=True, color_system=console.color_system, highlight=False, width=console.width)
+    render_console.print(renderable)
+    raw_output = buf.getvalue()
+
+    # Append \033[K (clear to end of line) to each line so shorter lines erase trailing characters from previous frames
+    lines = raw_output.splitlines()
+    cleared_output = "\n".join(line + "\033[K" for line in lines)
+
+    cursor_code = "\033[?25h" if show_cursor else "\033[?25l"
+    sys.stdout.write(f"\033[H{cursor_code}{cleared_output}\n\033[J")
     sys.stdout.flush()
 
 
@@ -665,7 +679,6 @@ class AutoFollowRunner:
 
             def update_live_ui(status_msg: str) -> None:
                 if use_live:
-                    purge_screen_and_home()
                     dashboard = build_dashboard_renderable(
                         auth_user=auth_user,
                         target_info=target_info,
@@ -679,8 +692,7 @@ class AutoFollowRunner:
                         live_stats=self.stats,
                         status_msg=status_msg
                     )
-                    console.print(dashboard)
-                    sys.stdout.flush()
+                    render_frame_in_place(dashboard, show_cursor=False)
 
             if use_live:
                 update_live_ui("[cyan]Fetching relationship cache...[/cyan]")
@@ -878,14 +890,13 @@ class InteractiveSession:
             self.current_status = f"[red]Initialization error: {e}[/red]"
 
     def redraw_screen(self, status_msg: Optional[str] = None) -> None:
-        """Purges screen and renders the full Rich dashboard at (1,1)."""
+        """Renders the full Rich dashboard at (1,1) without flicker."""
         if status_msg is not None:
             self.current_status = status_msg
 
         if not self.auth_user:
             return
 
-        purge_screen_and_home()
         dashboard = build_dashboard_renderable(
             auth_user=self.auth_user,
             target_info=self.target_info,
@@ -898,8 +909,7 @@ class InteractiveSession:
             avatar_lines=self.avatar_lines or OCTOCAT_FALLBACK_ASCII,
             status_msg=self.current_status
         )
-        console.print(dashboard)
-        sys.stdout.flush()
+        render_frame_in_place(dashboard, show_cursor=True)
 
     def print_help_screen(self) -> None:
         self.redraw_screen()
