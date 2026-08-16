@@ -6,6 +6,7 @@ Efficiently fetches followers of a target GitHub user and follows them
 only if they do not already follow the authenticated user and are not already followed.
 
 Features:
+- Full Alternate Screen Buffer (Zero scrollback pollution, true in-place TUI)
 - Fastfetch/Neofetch TrueColor avatar banner & live stats
 - Micro-badge developer watermark (crafted by @ragibalasad)
 - Pre-fetched bulk caching for O(1) in-memory relationship checks
@@ -74,9 +75,9 @@ def log_dim(msg: str) -> None:
 
 def strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences to compute visible string width."""
-    return re.sub(r'\x1b\[[0-9;]*[mGKH]', '', text)
+    return re.sub(r'\x1b\[[0-9;]*[mGKHJ]', '', text)
 
-def get_developer_watermark_divider(width: int = 70) -> str:
+def get_developer_watermark_divider(width: int = 68) -> str:
     """Renders a subtle, clean micro-badge developer watermark divider."""
     tag = " [crafted by @ragibalasad] "
     tag_colored = f" {Colors.DIM}[crafted by {Colors.CYAN}@ragibalasad{Colors.RESET}{Colors.DIM}]{Colors.RESET} "
@@ -561,8 +562,7 @@ class AutoFollowRunner:
         interactive: bool = False,
         verbose: bool = False,
         auth_user_cache: Optional[Dict[str, Any]] = None,
-        avatar_lines_cache: Optional[List[str]] = None,
-        on_status_callback: Optional[Callable[[str], None]] = None
+        avatar_lines_cache: Optional[List[str]] = None
     ) -> None:
         self.client = client
         self.state_mgr = state_mgr
@@ -576,7 +576,6 @@ class AutoFollowRunner:
         self.interrupted = False
         self.auth_user_cache = auth_user_cache
         self.avatar_lines_cache = avatar_lines_cache
-        self.on_status_callback = on_status_callback
 
         # Statistics
         self.stats = {
@@ -594,11 +593,13 @@ class AutoFollowRunner:
         self.interrupted = True
 
     def _update_ui(self, auth_user: Dict[str, Any], target_info: Dict[str, Any], avatar_lines: List[str], status_text: str) -> None:
-        """In-place redraw for interactive mode: updates Fastfetch banner, micro-badge, and status line."""
+        """In-place redraw for interactive mode: homes cursor in alternate screen buffer with zero scrollback pollution."""
         if not self.interactive or self.verbose:
             return
 
-        sys.stdout.write("\033[2J\033[H")  # Clear screen and cursor to top
+        # Move cursor to top-left (1,1) of the alternate screen buffer without adding to scrollback
+        sys.stdout.write("\033[H")
+        
         banner_lines = build_neofetch_lines(
             auth_user=auth_user,
             target_info=target_info,
@@ -611,16 +612,18 @@ class AutoFollowRunner:
             avatar_lines=avatar_lines,
             live_stats=self.stats
         )
-        print("\n" + "\n".join(banner_lines) + "\n")
-        print(get_developer_watermark_divider(68) + "\n")
+        print("\n" + "\n".join(banner_lines) + "\n\033[K")
+        print(get_developer_watermark_divider(68) + "\n\033[K")
 
         pct = min(1.0, self.stats["followed_success"] / max(1, self.max_follows))
         bar_len = 20
         filled = int(bar_len * pct)
         bar = f"{Colors.GREEN}{'█' * filled}{Colors.GRAY}{'░' * (bar_len - filled)}{Colors.RESET}"
         
-        print(f"  {Colors.BOLD}Progress:{Colors.RESET} [{bar}] {self.stats['followed_success']}/{self.max_follows} ({int(pct * 100)}%) | {Colors.DIM}Examined: {self.stats['total_examined']} | Skipped: {self.stats['skipped_already_follows_me'] + self.stats['skipped_already_following'] + self.stats['skipped_state_history']}{Colors.RESET}")
+        print(f"  {Colors.BOLD}Progress:{Colors.RESET} [{bar}] {self.stats['followed_success']}/{self.max_follows} ({int(pct * 100)}%) | {Colors.DIM}Examined: {self.stats['total_examined']} | Skipped: {self.stats['skipped_already_follows_me'] + self.stats['skipped_already_following'] + self.stats['skipped_state_history']}{Colors.RESET}\033[K")
         print(f"  {Colors.BOLD}[Status]{Colors.RESET} {status_text}\033[K")
+        # Clear any remaining lines below
+        sys.stdout.write("\033[J")
         sys.stdout.flush()
 
     def run(self) -> str:
@@ -813,7 +816,7 @@ class AutoFollowRunner:
 # ==============================================================================
 
 class InteractiveSession:
-    """Manages the interactive command-line environment."""
+    """Manages the interactive command-line environment using the Alternate Screen Buffer."""
 
     def __init__(self, token: str, default_target: Optional[str] = None) -> None:
         self.token = token
@@ -844,14 +847,15 @@ class InteractiveSession:
             self.current_status = f"{Colors.RED}Initialization error: {e}{Colors.RESET}"
 
     def redraw_screen(self, status_msg: Optional[str] = None) -> None:
-        """Clears terminal and renders the Fastfetch card, watermark divider, and status line."""
+        """Homes cursor in the Alternate Screen Buffer and renders the full dashboard with zero scrollback."""
         if status_msg is not None:
             self.current_status = status_msg
 
         if not self.auth_user:
             return
 
-        sys.stdout.write("\033[2J\033[H")  # Clear screen and move cursor to top
+        # Move cursor to top-left (1,1) without pushing content into scrollback history
+        sys.stdout.write("\033[H")
         banner_lines = build_neofetch_lines(
             auth_user=self.auth_user,
             target_info=self.target_info,
@@ -863,23 +867,27 @@ class InteractiveSession:
             dry_run=self.dry_run,
             avatar_lines=self.avatar_lines or OCTOCAT_FALLBACK_ASCII
         )
-        print("\n" + "\n".join(banner_lines) + "\n")
-        print(get_developer_watermark_divider(68) + "\n")
+        print("\n" + "\n".join(banner_lines) + "\n\033[K")
+        print(get_developer_watermark_divider(68) + "\n\033[K")
         print(f"  {Colors.BOLD}[Status]{Colors.RESET} {self.current_status}\033[K")
+        # Clear everything below the status line to ensure old text does not linger
+        sys.stdout.write("\033[J")
+        sys.stdout.flush()
 
     def print_help_screen(self) -> None:
         self.redraw_screen()
-        print(f"\n  {Colors.BOLD}{Colors.CYAN}Interactive Commands Reference:{Colors.RESET}")
-        print(f"    {Colors.GREEN}set target <username>{Colors.RESET}     Set the target user whose followers to extract")
-        print(f"    {Colors.GREEN}set limit <num>{Colors.RESET}           Set max follows for session (e.g., set limit 30)")
-        print(f"    {Colors.GREEN}set delay <min> <max>{Colors.RESET}     Set pacing delay range in seconds (e.g., set delay 2.5 5.0)")
-        print(f"    {Colors.GREEN}set dry-run <on|off>{Colors.RESET}      Toggle dry-run simulation mode")
-        print(f"    {Colors.GREEN}set token <token>{Colors.RESET}         Update GitHub PAT token")
-        print(f"    {Colors.GREEN}show{Colors.RESET} / {Colors.GREEN}status{Colors.RESET}              Refresh and redraw profile & settings")
-        print(f"    {Colors.GREEN}clear-state{Colors.RESET}               Reset local followed history cache (.follow_state.json)")
-        print(f"    {Colors.GREEN}run{Colors.RESET}                       Start execution with live in-place single-line status")
-        print(f"    {Colors.GREEN}run -v{Colors.RESET} / {Colors.GREEN}run --verbose{Colors.RESET}    Start execution with scrolling verbose logs")
-        print(f"    {Colors.GREEN}exit{Colors.RESET} / {Colors.GREEN}quit{Colors.RESET}               Exit the program\n")
+        print(f"\n  {Colors.BOLD}{Colors.CYAN}Interactive Commands Reference:{Colors.RESET}\033[K")
+        print(f"    {Colors.GREEN}set target <username>{Colors.RESET}     Set the target user whose followers to extract\033[K")
+        print(f"    {Colors.GREEN}set limit <num>{Colors.RESET}           Set max follows for session (e.g., set limit 30)\033[K")
+        print(f"    {Colors.GREEN}set delay <min> <max>{Colors.RESET}     Set pacing delay range in seconds (e.g., set delay 2.5 5.0)\033[K")
+        print(f"    {Colors.GREEN}set dry-run <on|off>{Colors.RESET}      Toggle dry-run simulation mode\033[K")
+        print(f"    {Colors.GREEN}set token <token>{Colors.RESET}         Update GitHub PAT token\033[K")
+        print(f"    {Colors.GREEN}show{Colors.RESET} / {Colors.GREEN}status{Colors.RESET}              Refresh and redraw profile & settings\033[K")
+        print(f"    {Colors.GREEN}clear-state{Colors.RESET}               Reset local followed history cache (.follow_state.json)\033[K")
+        print(f"    {Colors.GREEN}run{Colors.RESET}                       Start execution with live in-place single-line status\033[K")
+        print(f"    {Colors.GREEN}run -v{Colors.RESET} / {Colors.GREEN}run --verbose{Colors.RESET}    Start execution with scrolling verbose logs\033[K")
+        print(f"    {Colors.GREEN}exit{Colors.RESET} / {Colors.GREEN}quit{Colors.RESET}               Exit the program\033[K\n")
+        sys.stdout.flush()
 
     def handle_command(self, cmd_line: str) -> bool:
         """Processes an interactive command and updates status in place. Returns False to exit."""
@@ -892,7 +900,6 @@ class InteractiveSession:
         args = parts[1:]
 
         if cmd in ("exit", "quit", "q"):
-            print(f"\n  {Colors.CYAN}Goodbye! 👋{Colors.RESET}\n")
             return False
 
         elif cmd in ("help", "?"):
@@ -1003,20 +1010,29 @@ class InteractiveSession:
         return True
 
     def start_repl(self) -> None:
-        """Starts the interactive prompt loop."""
-        self.initialize()
-        self.redraw_screen()
+        """Starts the interactive prompt loop in the Alternate Screen Buffer."""
+        try:
+            # Enter Alternate Screen Buffer & clear alternate viewport
+            sys.stdout.write("\033[?1049h\033[H\033[2J")
+            sys.stdout.flush()
 
-        while True:
-            try:
-                prompt_str = f"  {Colors.BOLD}{Colors.CYAN}github-follow{Colors.RESET} {Colors.GRAY}❯{Colors.RESET} "
-                cmd_line = input(prompt_str)
-                should_continue = self.handle_command(cmd_line)
-                if not should_continue:
+            self.initialize()
+            self.redraw_screen()
+
+            while True:
+                try:
+                    prompt_str = f"  {Colors.BOLD}{Colors.CYAN}github-follow{Colors.RESET} {Colors.GRAY}❯{Colors.RESET} "
+                    cmd_line = input(prompt_str)
+                    should_continue = self.handle_command(cmd_line)
+                    if not should_continue:
+                        break
+                except (KeyboardInterrupt, EOFError):
                     break
-            except (KeyboardInterrupt, EOFError):
-                print(f"\n\n  {Colors.CYAN}Exiting... Goodbye! 👋{Colors.RESET}\n")
-                break
+        finally:
+            # Cleanly exit Alternate Screen Buffer and restore original user terminal buffer
+            sys.stdout.write("\033[?1049l\033[?25h")
+            sys.stdout.flush()
+            print(f"\n  {Colors.CYAN}Exited GitHub Follow TUI. Goodbye! 👋{Colors.RESET}\n")
 
 
 # ==============================================================================
