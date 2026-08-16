@@ -22,17 +22,22 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple
 
-import requests
-from dotenv import load_dotenv
-
-# Standard Python TUI Libraries
-from rich.console import Console, Group
-from rich.live import Live
-from rich.panel import Panel
-from rich.progress import ProgressBar
-from rich.rule import Rule
-from rich.table import Table
-from rich.text import Text
+try:
+    import requests
+    from dotenv import load_dotenv
+    from rich.console import Console, Group
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.progress import ProgressBar
+    from rich.rule import Rule
+    from rich.table import Table
+    from rich.text import Text
+except ImportError as e:
+    missing_pkg = getattr(e, "name", str(e))
+    print(f"\n\033[91m[ERROR]\033[0m Missing required Python package: '{missing_pkg}'.")
+    print(f"\033[1mPlease install required packages by running:\033[0m")
+    print(f"    pip install -r requirements.txt\n")
+    sys.exit(1)
 
 try:
     from PIL import Image
@@ -42,6 +47,27 @@ except ImportError:
 
 # Global Rich console instance
 console = Console(highlight=False)
+
+APP_NAME = "ActiveFollow"
+APP_VERSION = "v1.0"
+
+
+def enter_alternate_screen() -> None:
+    """Switches terminal to Alternate Screen Buffer with zero scrollback history."""
+    sys.stdout.write("\033[?1049h\033[H\033[2J\033[3J")
+    sys.stdout.flush()
+
+
+def exit_alternate_screen() -> None:
+    """Restores primary terminal buffer and unhides cursor."""
+    sys.stdout.write("\033[?1049l\033[?25h")
+    sys.stdout.flush()
+
+
+def purge_screen_and_home() -> None:
+    """Moves cursor to row 1 col 1, clears entire visible viewport, and purges scrollback buffer."""
+    sys.stdout.write("\033[H\033[2J\033[3J")
+    sys.stdout.flush()
 
 
 # ==============================================================================
@@ -117,6 +143,21 @@ def fetch_avatar_ansi(avatar_url: Optional[str], session: requests.Session) -> L
     return OCTOCAT_FALLBACK_ASCII
 
 
+def get_developer_watermark_divider(width: int = 68) -> Text:
+    """Renders a subtle, clean micro-badge developer watermark divider with exact fixed width."""
+    tag_text = " [crafted by @ragibalasad] "
+    side_len = max(4, (width - len(tag_text)) // 2)
+    right_len = max(4, width - len(tag_text) - side_len)
+
+    t = Text("  ")
+    t.append("─" * side_len, style="dim bright_black")
+    t.append(" [crafted by ", style="dim")
+    t.append("@ragibalasad", style="bold cyan")
+    t.append("] ", style="dim")
+    t.append("─" * right_len, style="dim bright_black")
+    return t
+
+
 def build_dashboard_renderable(
     auth_user: Dict[str, Any],
     target_info: Optional[Dict[str, Any]],
@@ -158,8 +199,6 @@ def build_dashboard_renderable(
     info_table.add_column(justify="left", style="bold white", width=12, no_wrap=True)
     info_table.add_column(justify="left")
 
-    info_table.add_row(f"[bold cyan]{username}@github[/bold cyan]", "")
-    info_table.add_row(Text("─" * 38, style="dim bright_black"), "")
     info_table.add_row("User:", f"{name} [dim](@{username})[/dim]")
     info_table.add_row("Bio:", f"[dim]{bio}[/dim]")
     info_table.add_row("Account:", f"Joined {created_year} | {public_repos} Repos")
@@ -169,50 +208,79 @@ def build_dashboard_renderable(
     info_table.add_row("Safety:", f"Pacing {delay_min:.1f}s–{delay_max:.1f}s | Limit: {max_follows}")
     info_table.add_row("Mode:", mode_badge)
 
-    if live_stats:
-        followed = live_stats.get("followed_success", 0)
-        examined = live_stats.get("total_examined", 0)
-        info_table.add_row("Progress:", f"[bold green]{followed}/{max_follows}[/bold green] Followed | {examined} Examined")
-    else:
-        info_table.add_row("", " \033[90m●\033[0m \033[91m●\033[0m \033[92m●\033[0m \033[93m●\033[0m \033[94m●\033[0m \033[95m●\033[0m \033[96m●\033[0m \033[97m●\033[0m")
+    info_table.add_row("", " \033[90m●\033[0m \033[91m●\033[0m \033[92m●\033[0m \033[93m●\033[0m \033[94m●\033[0m \033[95m●\033[0m \033[96m●\033[0m \033[97m●\033[0m")
 
-    # Avatar on left, info on right
-    avatar_text = Text.from_ansi("\n".join(avatar_lines))
+    # Combine Title, Divider, and Key-Value Table cleanly
+    right_column = Group(
+        Text.from_markup(f"[bold cyan]{APP_NAME} {APP_VERSION}[/bold cyan]"),
+        Text("─" * 36, style="dim bright_black"),
+        info_table
+    )
+
+    # Avatar on left, info on right (with 2-space left margin matching layout)
+    padded_avatar_lines = ["  " + line for line in avatar_lines]
+    avatar_text = Text.from_ansi("\n".join(padded_avatar_lines))
     card_table = Table.grid(padding=(0, 3))
-    card_table.add_column(justify="center")
     card_table.add_column(justify="left")
-    card_table.add_row(avatar_text, info_table)
+    card_table.add_column(justify="left")
+    card_table.add_row(avatar_text, right_column)
 
     renderables: List[Any] = [
         Text(""),
         card_table,
         Text(""),
-        Rule("[dim]crafted by [bold cyan]@ragibalasad[/bold cyan][/dim]", style="bright_black"),
+        get_developer_watermark_divider(68),
     ]
 
     # Live progress bar if stats provided
     if live_stats:
         followed = live_stats.get("followed_success", 0)
+        examined = live_stats.get("total_examined", 0)
+        skipped_follows = live_stats.get("skipped_already_follows_me", 0)
+        skipped_following = live_stats.get("skipped_already_following", 0)
+        skipped_history = live_stats.get("skipped_state_history", 0)
+        skipped_total = skipped_follows + skipped_following + skipped_history
         pct = min(1.0, followed / max(1, max_follows))
-        progress_bar = ProgressBar(total=max_follows, completed=followed, width=24, style="bright_black", complete_style="green")
+        pct_int = int(pct * 100)
+
+        progress_bar = ProgressBar(
+            total=max_follows,
+            completed=followed,
+            width=20,
+            style="bright_black",
+            complete_style="bold green"
+        )
         
         progress_grid = Table.grid(padding=(0, 1))
-        progress_grid.add_column()
-        progress_grid.add_column()
+        progress_grid.add_column(justify="left")
+        progress_grid.add_column(justify="left")
+        progress_grid.add_column(justify="left")
+        
+        stats_text = Text(" ")
+        stats_text.append(f"[{followed}/{max_follows}]", style="bold green")
+        stats_text.append(f" ({pct_int}%)", style="bold cyan")
+        stats_text.append(" | ", style="dim bright_black")
+        stats_text.append(f"Examined: {examined}", style="dim")
+        stats_text.append(" | ", style="dim bright_black")
+        stats_text.append(f"Skipped: {skipped_total}", style="dim yellow")
+        
         progress_grid.add_row(
-            "[bold]Progress:[/bold] ",
+            Text("  Progress: ", style="bold white"),
             progress_bar,
+            stats_text
         )
         renderables.append(Text(""))
         renderables.append(progress_grid)
-        renderables.append(
-            Text.from_markup(f"  [dim]Examined: {live_stats.get('total_examined', 0)} | Skipped (Follows you): {live_stats.get('skipped_already_follows_me', 0)} | Skipped (Following): {live_stats.get('skipped_already_following', 0)} | History: {live_stats.get('skipped_state_history', 0)}[/dim]")
-        )
 
     # Status message line
     if status_msg:
         renderables.append(Text(""))
-        renderables.append(Text.from_markup(f"  [bold]\[Status][/bold] {status_msg}"))
+        status_line = Text("  [Status] ", style="bold")
+        try:
+            status_line.append_text(Text.from_markup(status_msg))
+        except Exception:
+            status_line.append(status_msg)
+        renderables.append(status_line)
 
     return Group(*renderables)
 
@@ -592,27 +660,30 @@ class AutoFollowRunner:
 
             avatar_lines = self.avatar_lines_cache or fetch_avatar_ansi(auth_user.get("avatar_url"), self.client.session)
 
-            # In interactive non-verbose mode, use Rich Live for in-place rendering
+            # In interactive non-verbose mode, use in-place screen purge and repaint
             use_live = (self.interactive and not self.verbose)
 
-            def get_renderable(status_msg: str) -> Group:
-                return build_dashboard_renderable(
-                    auth_user=auth_user,
-                    target_info=target_info,
-                    api_remaining=self.client.rate_limit_remaining,
-                    api_limit=self.client.rate_limit_limit,
-                    max_follows=self.max_follows,
-                    delay_min=self.delay_min,
-                    delay_max=self.delay_max,
-                    dry_run=self.dry_run,
-                    avatar_lines=avatar_lines,
-                    live_stats=self.stats,
-                    status_msg=status_msg
-                )
+            def update_live_ui(status_msg: str) -> None:
+                if use_live:
+                    purge_screen_and_home()
+                    dashboard = build_dashboard_renderable(
+                        auth_user=auth_user,
+                        target_info=target_info,
+                        api_remaining=self.client.rate_limit_remaining,
+                        api_limit=self.client.rate_limit_limit,
+                        max_follows=self.max_follows,
+                        delay_min=self.delay_min,
+                        delay_max=self.delay_max,
+                        dry_run=self.dry_run,
+                        avatar_lines=avatar_lines,
+                        live_stats=self.stats,
+                        status_msg=status_msg
+                    )
+                    console.print(dashboard)
+                    sys.stdout.flush()
 
-            live_context = Live(get_renderable("[cyan]Fetching relationship cache...[/cyan]"), console=console, auto_refresh=False) if use_live else None
-            if live_context:
-                live_context.start()
+            if use_live:
+                update_live_ui("[cyan]Fetching relationship cache...[/cyan]")
             elif not self.interactive or self.verbose:
                 render_neofetch_banner(
                     auth_user=auth_user,
@@ -648,15 +719,13 @@ class AutoFollowRunner:
             for candidate in self.client.stream_target_followers(target_login):
                 if self.interrupted:
                     final_status = f"[yellow]Execution stopped by user (Ctrl+C). Followed {self.stats['followed_success']} users.[/yellow]"
-                    if live_context:
-                        live_context.update(get_renderable(final_status), refresh=True)
+                    update_live_ui(final_status)
                     break
 
                 if self.stats["followed_success"] >= self.max_follows:
                     final_status = f"[green]Completed session! Followed {self.stats['followed_success']} users from @{target_login}.[/green]"
-                    if live_context:
-                        live_context.update(get_renderable(final_status), refresh=True)
-                    elif not self.interactive or self.verbose:
+                    update_live_ui(final_status)
+                    if not self.interactive or self.verbose:
                         console.print(f"[blue][INFO][/blue] Reached target follow limit of {self.max_follows} for this session.")
                     break
 
@@ -670,8 +739,8 @@ class AutoFollowRunner:
                 if candidate_lower in my_followers:
                     self.stats["skipped_already_follows_me"] += 1
                     status = f"[dim]Skipped @{candidate_login} (Already follows you)[/dim]"
-                    if live_context:
-                        live_context.update(get_renderable(status), refresh=True)
+                    if use_live:
+                        update_live_ui(status)
                     elif self.verbose:
                         console.print(f"       [dim]Skipped @{candidate_login} (Already follows you)[/dim]")
                     continue
@@ -679,8 +748,8 @@ class AutoFollowRunner:
                 if candidate_lower in my_following:
                     self.stats["skipped_already_following"] += 1
                     status = f"[dim]Skipped @{candidate_login} (You already follow them)[/dim]"
-                    if live_context:
-                        live_context.update(get_renderable(status), refresh=True)
+                    if use_live:
+                        update_live_ui(status)
                     elif self.verbose:
                         console.print(f"       [dim]Skipped @{candidate_login} (You already follow them)[/dim]")
                     continue
@@ -688,8 +757,8 @@ class AutoFollowRunner:
                 if self.state_mgr.is_previously_followed(candidate_login):
                     self.stats["skipped_state_history"] += 1
                     status = f"[dim]Skipped @{candidate_login} (In local history cache)[/dim]"
-                    if live_context:
-                        live_context.update(get_renderable(status), refresh=True)
+                    if use_live:
+                        update_live_ui(status)
                     elif self.verbose:
                         console.print(f"       [dim]Skipped @{candidate_login} (Recorded in local history)[/dim]")
                     continue
@@ -700,16 +769,16 @@ class AutoFollowRunner:
                 if self.dry_run:
                     self.stats["followed_success"] += 1
                     status = f"[magenta][DRY RUN][/magenta] [{current_num}/{self.max_follows}] Would follow [bold]@{candidate_login}[/bold]"
-                    if live_context:
-                        live_context.update(get_renderable(status), refresh=True)
+                    if use_live:
+                        update_live_ui(status)
                     elif not self.interactive or self.verbose:
                         console.print(f"[magenta][DRY RUN][/magenta] [{current_num}/{self.max_follows}] Would follow [bold]@{candidate_login}[/bold] ({user_url})")
                     time.sleep(0.08)
                     continue
 
                 status_start = f"[{current_num}/{self.max_follows}] Following [bold]@{candidate_login}[/bold]..."
-                if live_context:
-                    live_context.update(get_renderable(status_start), refresh=True)
+                if use_live:
+                    update_live_ui(status_start)
                 elif not self.interactive or self.verbose:
                     console.print(f"[blue][INFO][/blue] [{current_num}/{self.max_follows}] Following [bold]@{candidate_login}[/bold] ({user_url})...")
                 
@@ -722,8 +791,8 @@ class AutoFollowRunner:
                     
                     sleep_time = random.uniform(self.delay_min, self.delay_max)
                     status_done = f"[green][SUCCESS][/green] Followed [bold]@{candidate_login}[/bold]! (Sleeping {sleep_time:.2f}s pacing)"
-                    if live_context:
-                        live_context.update(get_renderable(status_done), refresh=True)
+                    if use_live:
+                        update_live_ui(status_done)
                     elif not self.interactive or self.verbose:
                         console.print(f"[green][SUCCESS][/green] Successfully followed @{candidate_login}!")
                         console.print(f"       [dim]Pacing delay: sleeping {sleep_time:.2f}s...[/dim]")
@@ -737,11 +806,8 @@ class AutoFollowRunner:
                 else:
                     self.stats["followed_failed"] += 1
                     status_err = f"[red][FAILED][/red] Could not follow @{candidate_login}"
-                    if live_context:
-                        live_context.update(get_renderable(status_err), refresh=True)
-
-            if live_context:
-                live_context.stop()
+                    if use_live:
+                        update_live_ui(status_err)
 
             if not final_status:
                 final_status = f"[green]Finished. Followed {self.stats['followed_success']} candidates from @{target_login}.[/green]"
@@ -772,7 +838,7 @@ class AutoFollowRunner:
         table.add_row("Remaining API Quota", f"{self.client.rate_limit_remaining}/{self.client.rate_limit_limit}")
 
         console.print(table)
-        console.print(Rule("[dim]crafted by [bold cyan]@ragibalasad[/bold cyan][/dim]", style="bright_black"))
+        console.print(get_developer_watermark_divider(68))
         console.print("")
 
 
@@ -812,14 +878,14 @@ class InteractiveSession:
             self.current_status = f"[red]Initialization error: {e}[/red]"
 
     def redraw_screen(self, status_msg: Optional[str] = None) -> None:
-        """Clears console and renders the full Rich dashboard."""
+        """Purges screen and renders the full Rich dashboard at (1,1)."""
         if status_msg is not None:
             self.current_status = status_msg
 
         if not self.auth_user:
             return
 
-        console.clear()
+        purge_screen_and_home()
         dashboard = build_dashboard_renderable(
             auth_user=self.auth_user,
             target_info=self.target_info,
@@ -833,6 +899,7 @@ class InteractiveSession:
             status_msg=self.current_status
         )
         console.print(dashboard)
+        sys.stdout.flush()
 
     def print_help_screen(self) -> None:
         self.redraw_screen()
@@ -974,8 +1041,9 @@ class InteractiveSession:
         return True
 
     def start_repl(self) -> None:
-        """Starts the interactive prompt loop using Rich."""
+        """Starts the interactive prompt loop in the Alternate Screen Buffer."""
         try:
+            enter_alternate_screen()
             self.initialize()
             self.redraw_screen()
 
@@ -989,6 +1057,7 @@ class InteractiveSession:
                 except (KeyboardInterrupt, EOFError):
                     break
         finally:
+            exit_alternate_screen()
             console.print("\n  [cyan]Exited GitHub Follow TUI. Goodbye! 👋[/cyan]\n")
 
 
