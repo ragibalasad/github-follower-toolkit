@@ -25,11 +25,11 @@ classifiers = [
 ]
 
 [project.scripts]
-ghf-toolkit = "ghf_toolkit:main"
-github-follower-toolkit = "ghf_toolkit:main"
+ghf-toolkit = "ghf_toolkit.cli:main"
+github-follower-toolkit = "ghf_toolkit.cli:main"
 
-[tool.setuptools]
-py-modules = ["ghf_toolkit"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.setuptools.dynamic]
 version = {attr = "ghf_toolkit.__version__"}

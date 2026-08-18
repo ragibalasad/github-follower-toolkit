@@ -1,21 +1,24 @@
-#!/usr/bin/env python3
 """
 Unit tests for GitHub Follower Toolkit.
-Tests filtering logic, rate-limit headers handling, state management, whitelist management,
-retry backoff, Fastfetch TrueColor avatar rendering, Rich dashboard, UnfollowRunner pipeline,
-and Interactive REPL session Unix-style commands (ufollow, wl, ls, set, run).
+Tests API client requests, rate limit backoff, state persistence,
+whitelist filtering, follow/unfollow workflows, and interactive shell commands.
 """
 
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 import requests
 
 from PIL import Image
 from rich.console import Console
+
+# Add src to sys.path for direct test execution
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from ghf_toolkit import (
     AutoFollowRunner,
@@ -49,10 +52,10 @@ class TestStateManager(unittest.TestCase):
         
         mgr.record_follow("alice")
         self.assertTrue(mgr.is_previously_followed("alice"))
-        self.assertTrue(mgr.is_previously_followed("ALICE"))  # Case insensitive
+        self.assertTrue(mgr.is_previously_followed("ALICE"))  # Case-insensitive comparison
         self.assertEqual(mgr.state["total_followed_all_time"], 1)
 
-        # Reload from disk
+        # Reload state from disk
         mgr2 = StateManager(state_file=self.state_file)
         self.assertTrue(mgr2.is_previously_followed("alice"))
         self.assertEqual(mgr2.state["total_followed_all_time"], 1)
@@ -83,16 +86,16 @@ class TestWhitelistManager(unittest.TestCase):
         added = wl.add("torvalds", "@octocat")
         self.assertEqual(len(added), 2)
         self.assertTrue(wl.is_whitelisted("torvalds"))
-        self.assertTrue(wl.is_whitelisted("TORVALDS"))  # Case insensitive
-        self.assertTrue(wl.is_whitelisted("@octocat"))  # Strip @ handle
+        self.assertTrue(wl.is_whitelisted("TORVALDS"))  # Case-insensitive comparison
+        self.assertTrue(wl.is_whitelisted("@octocat"))  # Remove leading @ character
         self.assertTrue(wl.is_whitelisted("octocat"))
 
-        # Reload from disk
+        # Reload whitelist from disk
         wl2 = WhitelistManager(whitelist_file=self.wl_file)
         self.assertTrue(wl2.is_whitelisted("torvalds"))
         self.assertEqual(wl2.list(), ["octocat", "torvalds"])
 
-        # Remove
+        # Remove user from whitelist
         removed = wl.remove("@torvalds")
         self.assertEqual(removed, ["torvalds"])
         self.assertFalse(wl.is_whitelisted("torvalds"))
@@ -132,7 +135,7 @@ class TestAvatarAndBanner(unittest.TestCase):
         }
         dummy_avatar_lines = ["▀" * 24] * 12
 
-        # Follow dashboard
+        # Follow dashboard rendering
         renderable_follow = build_dashboard_renderable(
             auth_user=auth_user,
             target_info=target_info,
@@ -148,7 +151,7 @@ class TestAvatarAndBanner(unittest.TestCase):
         )
         self.assertIsNotNone(renderable_follow)
 
-        # Unfollow dashboard
+        # Unfollow dashboard rendering
         renderable_unfollow = build_dashboard_renderable(
             auth_user=auth_user,
             target_info=None,
@@ -333,7 +336,7 @@ class TestUnfollowPipeline(unittest.TestCase):
             "following": 4,
             "avatar_url": None
         }
-        # You follow: user_a (mutual), user_b (non-follower), user_vip (non-follower but whitelisted), user_c (non-follower)
+        # Test candidates: user_a (mutual), user_b (non-follower), user_vip (whitelisted non-follower), user_c (non-follower)
         mock_fetch_following.return_value = {"user_a", "user_b", "user_vip", "user_c"}
         mock_fetch_followers.return_value = {"user_a"}
         self.wl_mgr.add("user_vip")
@@ -392,7 +395,7 @@ class TestUnfollowPipeline(unittest.TestCase):
 
         runner.run()
 
-        # In dry run, unfollow_user is NOT called, but stats count simulated actions
+        # In simulation mode, verify API mutation calls are omitted while statistics update
         self.assertEqual(runner.stats["unfollowed_success"], 2)
         self.assertEqual(runner.stats["skipped_whitelisted"], 1)
         self.assertEqual(mock_unfollow_user.call_count, 0)
@@ -415,21 +418,21 @@ class TestInteractiveSession(unittest.TestCase):
         session = InteractiveSession(token="mock_token")
         session.initialize()
 
-        # Test set target
+        # Test target command
         session.handle_command("set target octocat")
         self.assertEqual(session.target_username, "octocat")
         self.assertIsNotNone(session.target_info)
 
-        # Test set limit
+        # Test limit command
         session.handle_command("set limit 75")
         self.assertEqual(session.max_follows, 75)
 
-        # Test set delay
+        # Test delay command
         session.handle_command("set delay 3.0 6.0")
         self.assertEqual(session.delay_min, 3.0)
         self.assertEqual(session.delay_max, 6.0)
 
-        # Test set dry-run
+        # Test dry-run command
         session.handle_command("set dry-run on")
         self.assertTrue(session.dry_run)
 
@@ -448,11 +451,11 @@ class TestInteractiveSession(unittest.TestCase):
         session.handle_command("wl clear")
         self.assertEqual(len(session.whitelist_mgr.list()), 0)
 
-        # Test show / status command
+        # Test show and status commands
         session.handle_command("status")
         self.assertEqual(session.auth_user["login"], "myuser")
 
-        # Test exit
+        # Test exit command
         cont = session.handle_command("exit")
         self.assertFalse(cont)
 
@@ -468,4 +471,3 @@ class TestTokenResolution(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
