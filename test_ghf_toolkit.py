@@ -19,14 +19,17 @@ from rich.console import Console
 
 from ghf_toolkit import (
     AutoFollowRunner,
+    ConfigManager,
     GitHubAPIClient,
     InteractiveSession,
     StateManager,
     UnfollowRunner,
     WhitelistManager,
     build_dashboard_renderable,
+    get_config_dir,
     image_to_ansi_halfblocks,
-    render_neofetch_banner
+    render_neofetch_banner,
+    resolve_token
 )
 
 
@@ -454,5 +457,38 @@ class TestInteractiveSession(unittest.TestCase):
         self.assertFalse(cont)
 
 
+class TestConfigManager(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+        self.tmp.close()
+        self.config_file = self.tmp.name
+
+    def tearDown(self):
+        if os.path.exists(self.config_file):
+            os.unlink(self.config_file)
+
+    def test_save_and_load_config(self):
+        cfg = ConfigManager(config_file=self.config_file)
+        self.assertEqual(cfg.get_token(), "")
+        cfg.set_token("ghp_test_token_12345")
+        cfg.set("target", "octocat")
+        cfg.set("max_follows", 100)
+
+        # Reload
+        cfg2 = ConfigManager(config_file=self.config_file)
+        self.assertEqual(cfg2.get_token(), "ghp_test_token_12345")
+        self.assertEqual(cfg2.get("target"), "octocat")
+        self.assertEqual(cfg2.get("max_follows"), 100)
+
+    def test_resolve_token_priority(self):
+        # 1. CLI argument has top priority
+        self.assertEqual(resolve_token(cli_token="ghp_cli_token"), "ghp_cli_token")
+
+        # 2. Environment variable has second priority
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_env_token"}):
+            self.assertEqual(resolve_token(), "ghp_env_token")
+
+
 if __name__ == "__main__":
     unittest.main()
+

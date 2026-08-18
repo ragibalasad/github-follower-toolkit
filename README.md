@@ -61,13 +61,13 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-### GitHub Token Configuration
-Set your token in `.env` or pass it via the CLI:
-```bash
-cp .env.example .env
-# Edit .env and set:
-# GITHUB_TOKEN=ghp_your_actual_token_here
-```
+### GitHub Token & Configuration
+`ghf-toolkit` follows the standard CLI credential hierarchy:
+1. **Interactive Prompt:** On first launch, the tool prompts for your token (masked input) and securely saves it to `~/.config/ghf-toolkit/config.json` (`chmod 600`).
+2. **Environment Variable:** `export GITHUB_TOKEN=ghp_xxx` in your `~/.bashrc` or `~/.zshrc`.
+3. **Local `.env`:** For developers, a `.env` file in the repo (`cp .env.example .env`).
+4. **CLI Flag:** `ghf-toolkit --token ghp_xxx`
+
 > **Token Scope:** Classic PAT with `user:follow` scope, or Fine-Grained PAT with `Followers: Read & Write`.
 
 ---

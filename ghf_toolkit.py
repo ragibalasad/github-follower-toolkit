@@ -22,7 +22,7 @@ import sys
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple, Union
 
 try:
     import requests
@@ -367,14 +367,126 @@ def render_neofetch_banner(
 
 
 # ==============================================================================
+# XDG Base Directory & Configuration Management
+# ==============================================================================
+
+def get_config_dir() -> Path:
+    """Returns ~/.config/ghf-toolkit on Linux/macOS or %APPDATA%/ghf-toolkit on Windows."""
+    if sys.platform == "win32":
+        base = Path(os.getenv("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        base = Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config"))
+    config_dir = base / "ghf-toolkit"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
+
+
+def get_default_state_path() -> Path:
+    """Returns path to follow_state.json in user config dir (fallback to local if exists)."""
+    global_path = get_config_dir() / "follow_state.json"
+    local_path = Path(".follow_state.json")
+    if not global_path.exists() and local_path.exists():
+        return local_path
+    return global_path
+
+
+def get_default_whitelist_path() -> Path:
+    """Returns path to whitelist.json in user config dir (fallback to local if exists)."""
+    global_path = get_config_dir() / "whitelist.json"
+    local_path = Path(".whitelist.json")
+    if not global_path.exists() and local_path.exists():
+        return local_path
+    return global_path
+
+
+class ConfigManager:
+    """Manages persistent CLI user configuration (~/.config/ghf-toolkit/config.json)."""
+
+    def __init__(self, config_file: Optional[Union[str, Path]] = None) -> None:
+        self.config_path = Path(config_file) if config_file else (get_config_dir() / "config.json")
+        self.config: Dict[str, Any] = {}
+        self.load()
+
+    def load(self) -> None:
+        if self.config_path.exists() and self.config_path.stat().st_size > 0:
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    self.config = json.load(f)
+            except Exception as e:
+                console.print(f"[yellow][WARN][/yellow] Could not load config from {self.config_path}: {e}.")
+
+    def save(self) -> None:
+        try:
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_file = self.config_path.with_name(f"{self.config_path.name}.tmp")
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(self.config, f, indent=2)
+
+            # Restrict permissions (0600 on POSIX)
+            if hasattr(os, "chmod") and sys.platform != "win32":
+                try:
+                    os.chmod(temp_file, 0o600)
+                except Exception:
+                    pass
+
+            temp_file.replace(self.config_path)
+
+            if hasattr(os, "chmod") and sys.platform != "win32":
+                try:
+                    os.chmod(self.config_path, 0o600)
+                except Exception:
+                    pass
+        except Exception as e:
+            console.print(f"[red][ERROR][/red] Failed to save config to {self.config_path}: {e}")
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.config.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        self.config[key] = value
+        self.save()
+
+    def set_token(self, token: str) -> None:
+        self.set("github_token", token.strip())
+
+    def get_token(self) -> str:
+        return str(self.config.get("github_token", "")).strip()
+
+
+def resolve_token(cli_token: Optional[str] = None) -> str:
+    """
+    Resolves GITHUB_TOKEN following standard priority:
+    1. CLI Argument (--token)
+    2. System Environment Variable (GITHUB_TOKEN)
+    3. Global user config (~/.config/ghf-toolkit/config.json)
+    4. Local .env file (via python-dotenv)
+    """
+    if cli_token:
+        return cli_token.strip()
+
+    env_token = os.getenv("GITHUB_TOKEN", "").strip()
+    if env_token:
+        return env_token
+
+    cfg_mgr = ConfigManager()
+    cfg_token = cfg_mgr.get_token()
+    if cfg_token:
+        return cfg_token
+
+    # Try loading local .env as fallback
+    load_dotenv()
+    return os.getenv("GITHUB_TOKEN", "").strip()
+
+
+# ==============================================================================
 # State Manager
 # ==============================================================================
 
 class StateManager:
     """Manages persistent state across runs to avoid redundant actions."""
 
-    def __init__(self, state_file: str = ".follow_state.json") -> None:
-        self.state_path = Path(state_file)
+    def __init__(self, state_file: Optional[Union[str, Path]] = None) -> None:
+        self.state_path = Path(state_file) if state_file else get_default_state_path()
         self.state: Dict[str, Any] = {
             "followed_users": {},
             "history_skipped": {},
@@ -384,7 +496,7 @@ class StateManager:
         self.load()
 
     def load(self) -> None:
-        if self.state_path.exists():
+        if self.state_path.exists() and self.state_path.stat().st_size > 0:
             try:
                 with open(self.state_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -426,15 +538,15 @@ class StateManager:
 # ==============================================================================
 
 class WhitelistManager:
-    """Manages protected GitHub users stored in .whitelist.json."""
+    """Manages protected GitHub users stored in whitelist.json."""
 
-    def __init__(self, whitelist_file: str = ".whitelist.json") -> None:
-        self.whitelist_path = Path(whitelist_file)
+    def __init__(self, whitelist_file: Optional[Union[str, Path]] = None) -> None:
+        self.whitelist_path = Path(whitelist_file) if whitelist_file else get_default_whitelist_path()
         self.whitelist: Set[str] = set()
         self.load()
 
     def load(self) -> None:
-        if self.whitelist_path.exists():
+        if self.whitelist_path.exists() and self.whitelist_path.stat().st_size > 0:
             try:
                 with open(self.whitelist_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -1219,19 +1331,19 @@ class UnfollowRunner:
 class InteractiveSession:
     """Manages the interactive command-line environment using Rich."""
 
-    def __init__(self, token: str, default_target: Optional[str] = None) -> None:
+    def __init__(self, token: str, default_target: Optional[str] = None, config_mgr: Optional[ConfigManager] = None) -> None:
+        self.config_mgr = config_mgr or ConfigManager()
         self.token = token
         self.client = GitHubAPIClient(token=self.token)
         self.state_mgr = StateManager()
         self.whitelist_mgr = WhitelistManager()
 
-        self.target_username = default_target
+        self.target_username = default_target or self.config_mgr.get("target")
         self.target_info: Optional[Dict[str, Any]] = None
-        self.max_follows = 50
-        self.delay_min = 2.0
-        self.delay_max = 4.0
-        self.dry_run = False
-        self.state_file = ".follow_state.json"
+        self.max_follows = int(self.config_mgr.get("max_follows", 50))
+        self.delay_min = float(self.config_mgr.get("delay_min", 2.0))
+        self.delay_max = float(self.config_mgr.get("delay_max", 4.0))
+        self.dry_run = bool(self.config_mgr.get("dry_run", False))
 
         # Cached profile & avatar
         self.auth_user: Optional[Dict[str, Any]] = None
@@ -1538,6 +1650,7 @@ class InteractiveSession:
                     if info:
                         self.target_username = new_target
                         self.target_info = info
+                        self.config_mgr.set("target", new_target)
                         self.redraw_screen(f"[green]Target set to @{new_target} ({info.get('followers', 0):,} followers).[/green]")
                     else:
                         self.redraw_screen(f"[red]User '@{new_target}' not found on GitHub.[/red]")
@@ -1548,6 +1661,7 @@ class InteractiveSession:
                 else:
                     try:
                         self.max_follows = max(1, int(val_args[0]))
+                        self.config_mgr.set("max_follows", self.max_follows)
                         self.redraw_screen(f"[green]Session limit set to {self.max_follows}.[/green]")
                     except ValueError:
                         self.redraw_screen("[red]Invalid number for limit.[/red]")
@@ -1558,6 +1672,8 @@ class InteractiveSession:
                         d = float(val_args[0])
                         self.delay_min = d
                         self.delay_max = d + 2.0
+                        self.config_mgr.set("delay_min", self.delay_min)
+                        self.config_mgr.set("delay_max", self.delay_max)
                         self.redraw_screen(f"[green]Pacing delay set to {self.delay_min:.1f}s–{self.delay_max:.1f}s.[/green]")
                     except ValueError:
                         self.redraw_screen("[red]Invalid delay value.[/red]")
@@ -1565,6 +1681,8 @@ class InteractiveSession:
                     try:
                         self.delay_min = float(val_args[0])
                         self.delay_max = float(val_args[1])
+                        self.config_mgr.set("delay_min", self.delay_min)
+                        self.config_mgr.set("delay_max", self.delay_max)
                         self.redraw_screen(f"[green]Pacing delay set to {self.delay_min:.1f}s–{self.delay_max:.1f}s.[/green]")
                     except ValueError:
                         self.redraw_screen("[red]Invalid delay values.[/red]")
@@ -1574,6 +1692,7 @@ class InteractiveSession:
                     self.dry_run = not self.dry_run
                 else:
                     self.dry_run = val_args[0].lower() in ("true", "1", "yes", "on", "enable")
+                self.config_mgr.set("dry_run", self.dry_run)
                 state_str = "[bold magenta]ENABLED (Simulation)[/bold magenta]" if self.dry_run else "[bold green]DISABLED (Live)[/bold green]"
                 self.redraw_screen(f"[green]Dry-run mode {state_str}.[/green]")
 
@@ -1583,6 +1702,7 @@ class InteractiveSession:
                 else:
                     self.token = val_args[0]
                     self.client.set_token(self.token)
+                    self.config_mgr.set_token(self.token)
                     self.initialize()
                     self.redraw_screen("[green]GitHub Token updated and profile reloaded.[/green]")
 
@@ -1645,6 +1765,7 @@ class InteractiveSession:
 
 def parse_args() -> argparse.Namespace:
     load_dotenv()
+    cfg_mgr = ConfigManager()
 
     parser = argparse.ArgumentParser(
         description="High-efficiency, rate-limit aware GitHub Auto-Follow Script."
@@ -1657,36 +1778,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-t", "--target",
         type=str,
-        default=os.getenv("GITHUB_TARGET_USER"),
+        default=os.getenv("GITHUB_TARGET_USER") or cfg_mgr.get("target"),
         help="Target GitHub username whose followers will be extracted."
     )
     parser.add_argument(
         "--token",
         type=str,
-        default=os.getenv("GITHUB_TOKEN"),
-        help="GitHub Personal Access Token (or set GITHUB_TOKEN in .env)."
+        default=None,
+        help="GitHub Personal Access Token (or set GITHUB_TOKEN in env/config/.env)."
     )
     parser.add_argument(
         "-m", "--max-follows",
         type=int,
-        default=int(os.getenv("MAX_FOLLOWS", "50")),
+        default=int(os.getenv("MAX_FOLLOWS", cfg_mgr.get("max_follows", 50))),
         help="Maximum number of users to follow in this session (default: 50)."
     )
     parser.add_argument(
         "--delay-min",
         type=float,
-        default=float(os.getenv("DELAY_MIN", "2.0")),
+        default=float(os.getenv("DELAY_MIN", cfg_mgr.get("delay_min", 2.0))),
         help="Minimum delay in seconds between follow requests (default: 2.0)."
     )
     parser.add_argument(
         "--delay-max",
         type=float,
-        default=float(os.getenv("DELAY_MAX", "4.0")),
+        default=float(os.getenv("DELAY_MAX", cfg_mgr.get("delay_max", 4.0))),
         help="Maximum delay in seconds between follow requests (default: 4.0)."
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
+        default=bool(cfg_mgr.get("dry_run", False)),
         help="Run without making actual follow mutations (simulates filtering and actions)."
     )
     parser.add_argument(
@@ -1697,8 +1819,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--state-file",
         type=str,
-        default=".follow_state.json",
-        help="Path to JSON state history file (default: .follow_state.json)."
+        default=None,
+        help="Path to JSON state history file (default: ~/.config/ghf-toolkit/follow_state.json)."
     )
     parser.add_argument(
         "--clear-state",
@@ -1715,8 +1837,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    load_dotenv()
-    token = os.getenv("GITHUB_TOKEN", "")
+    cfg_mgr = ConfigManager()
 
     # Check for CLI subcommands
     if len(sys.argv) > 1:
@@ -1762,8 +1883,10 @@ def main() -> None:
 
 
         elif subcmd in ("ufollow", "uf", "rm", "unfollow"):
+            token = resolve_token()
             if not token:
                 console.print("[red][ERROR][/red] GITHUB_TOKEN environment variable required for 'ufollow' command.")
+                console.print(f"[dim]Provide via GITHUB_TOKEN environment variable or save in {cfg_mgr.config_path}[/dim]")
                 sys.exit(1)
             uf_parser = argparse.ArgumentParser(prog="ghf-toolkit ufollow", description="Unfollow non-followers or all accounts with safety whitelists.")
             uf_parser.add_argument("-n", "--non-followers", action="store_true", default=True, help="Unfollow non-followers (default)")
@@ -1801,27 +1924,31 @@ def main() -> None:
     args = parse_args()
     is_interactive = args.interactive or (len(sys.argv) == 1 and not args.target)
 
-    token = args.token
+    token = resolve_token(args.token)
     if not token:
         if is_interactive:
-            console.print("\n[bold yellow]GitHub Personal Access Token not found in .env![/bold yellow]")
+            console.print("\n[bold yellow]GitHub Personal Access Token not found in config, environment, or .env![/bold yellow]")
             try:
                 token = getpass.getpass("Enter GITHUB_TOKEN (input hidden): ").strip()
                 if not token:
                     token = input("Enter GITHUB_TOKEN (visible): ").strip()
             except (KeyboardInterrupt, EOFError):
                 sys.exit(0)
-        
+
+            if token:
+                cfg_mgr.set_token(token)
+                console.print(f"[green][SUCCESS][/green] Saved token securely to [bold]{cfg_mgr.config_path}[/bold]\n")
+
         if not token:
-            console.print("[red][ERROR][/red] GitHub Token is required! Provide it via --token or GITHUB_TOKEN in .env")
+            console.print("[red][ERROR][/red] GitHub Token is required! Provide it via --token, GITHUB_TOKEN, or config file.")
             console.print("\n[bold]How to create a GitHub token:[/bold]")
             console.print(" 1. Go to https://github.com/settings/tokens")
             console.print(" 2. Generate a Classic Token with scope 'user:follow', or a Fine-grained token with Follow (Read & Write)")
-            console.print(" 3. Put it in .env file as: GITHUB_TOKEN=ghp_xxx\n")
+            console.print(f" 3. Save it in {cfg_mgr.config_path} or .env file as: GITHUB_TOKEN=ghp_xxx\n")
             sys.exit(1)
 
     if is_interactive:
-        session = InteractiveSession(token=token, default_target=args.target)
+        session = InteractiveSession(token=token, default_target=args.target, config_mgr=cfg_mgr)
         if args.clear_state:
             session.state_mgr.clear()
         session.start_repl()
