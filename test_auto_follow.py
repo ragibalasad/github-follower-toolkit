@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Unit tests for GitHub Auto-Follow Script.
-Tests filtering logic, rate-limit headers handling, state management, retry backoff,
-Fastfetch/Neofetch TrueColor avatar banner rendering, Rich dashboard, and Interactive REPL session commands.
+Unit tests for GitHub Follower Toolkit.
+Tests filtering logic, rate-limit headers handling, state management, whitelist management,
+retry backoff, Fastfetch TrueColor avatar rendering, Rich dashboard, UnfollowRunner pipeline,
+and Interactive REPL session Unix-style commands (ufollow, wl, ls, set, run).
 """
 
 import io
@@ -21,6 +22,8 @@ from auto_follow import (
     GitHubAPIClient,
     InteractiveSession,
     StateManager,
+    UnfollowRunner,
+    WhitelistManager,
     build_dashboard_renderable,
     image_to_ansi_halfblocks,
     render_neofetch_banner
@@ -60,6 +63,46 @@ class TestStateManager(unittest.TestCase):
         self.assertEqual(mgr.state["total_followed_all_time"], 0)
 
 
+class TestWhitelistManager(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+        self.tmp.close()
+        self.wl_file = self.tmp.name
+
+    def tearDown(self):
+        if os.path.exists(self.wl_file):
+            os.unlink(self.wl_file)
+
+    def test_add_remove_and_load(self):
+        wl = WhitelistManager(whitelist_file=self.wl_file)
+        self.assertFalse(wl.is_whitelisted("torvalds"))
+
+        added = wl.add("torvalds", "@octocat")
+        self.assertEqual(len(added), 2)
+        self.assertTrue(wl.is_whitelisted("torvalds"))
+        self.assertTrue(wl.is_whitelisted("TORVALDS"))  # Case insensitive
+        self.assertTrue(wl.is_whitelisted("@octocat"))  # Strip @ handle
+        self.assertTrue(wl.is_whitelisted("octocat"))
+
+        # Reload from disk
+        wl2 = WhitelistManager(whitelist_file=self.wl_file)
+        self.assertTrue(wl2.is_whitelisted("torvalds"))
+        self.assertEqual(wl2.list(), ["octocat", "torvalds"])
+
+        # Remove
+        removed = wl.remove("@torvalds")
+        self.assertEqual(removed, ["torvalds"])
+        self.assertFalse(wl.is_whitelisted("torvalds"))
+
+    def test_clear_whitelist(self):
+        wl = WhitelistManager(whitelist_file=self.wl_file)
+        wl.add("user1", "user2")
+        self.assertEqual(len(wl.list()), 2)
+        wl.clear()
+        self.assertEqual(len(wl.list()), 0)
+        self.assertFalse(wl.is_whitelisted("user1"))
+
+
 class TestAvatarAndBanner(unittest.TestCase):
     def test_image_to_ansi_halfblocks(self):
         img = Image.new("RGBA", (24, 24), color=(255, 0, 0, 255))
@@ -70,7 +113,7 @@ class TestAvatarAndBanner(unittest.TestCase):
         lines = image_to_ansi_halfblocks(img_bytes, target_width=24, target_height=24)
         self.assertEqual(len(lines), 12)
 
-    def test_render_neofetch_banner(self):
+    def test_render_neofetch_banner_follow_and_unfollow(self):
         auth_user = {
             "login": "testuser",
             "name": "Test Developer",
@@ -86,8 +129,8 @@ class TestAvatarAndBanner(unittest.TestCase):
         }
         dummy_avatar_lines = ["▀" * 24] * 12
 
-        # Ensure build_dashboard_renderable executes without error
-        renderable = build_dashboard_renderable(
+        # Follow dashboard
+        renderable_follow = build_dashboard_renderable(
             auth_user=auth_user,
             target_info=target_info,
             api_remaining=4950,
@@ -97,53 +140,26 @@ class TestAvatarAndBanner(unittest.TestCase):
             delay_max=4.0,
             dry_run=True,
             avatar_lines=dummy_avatar_lines,
-            live_stats={"followed_success": 5, "total_examined": 10},
-            status_msg="Testing status"
+            live_stats={"op_type": "follow", "followed_success": 5, "total_examined": 10},
+            status_msg="Testing follow status"
         )
-        self.assertIsNotNone(renderable)
+        self.assertIsNotNone(renderable_follow)
 
-
-class TestInteractiveSession(unittest.TestCase):
-    @patch.object(GitHubAPIClient, "get_user_info")
-    @patch.object(GitHubAPIClient, "get_authenticated_user")
-    def test_interactive_commands(self, mock_auth_user, mock_user_info):
-        mock_auth_user.return_value = {
-            "login": "myuser",
-            "name": "Me",
-            "followers": 10,
-            "following": 5,
-            "public_repos": 3,
-            "created_at": "2022-01-01T00:00:00Z"
-        }
-        mock_user_info.return_value = {"login": "octocat", "followers": 1000}
-
-        session = InteractiveSession(token="mock_token")
-        session.initialize()
-
-        # Test set target
-        session.handle_command("set target octocat")
-        self.assertEqual(session.target_username, "octocat")
-        self.assertIsNotNone(session.target_info)
-
-        # Test set limit
-        session.handle_command("set limit 75")
-        self.assertEqual(session.max_follows, 75)
-
-        # Test set delay
-        session.handle_command("set delay 3.0 6.0")
-        self.assertEqual(session.delay_min, 3.0)
-        self.assertEqual(session.delay_max, 6.0)
-
-        # Test set dry-run
-        session.handle_command("set dry-run on")
-        self.assertTrue(session.dry_run)
-
-        session.handle_command("set dry-run off")
-        self.assertFalse(session.dry_run)
-
-        # Test exit
-        cont = session.handle_command("exit")
-        self.assertFalse(cont)
+        # Unfollow dashboard
+        renderable_unfollow = build_dashboard_renderable(
+            auth_user=auth_user,
+            target_info=None,
+            api_remaining=4950,
+            api_limit=5000,
+            max_follows=30,
+            delay_min=2.0,
+            delay_max=4.0,
+            dry_run=False,
+            avatar_lines=dummy_avatar_lines,
+            live_stats={"op_type": "unfollow", "unfollowed_success": 8, "target_total": 30, "skipped_whitelisted": 2},
+            status_msg="Testing unfollow status"
+        )
+        self.assertIsNotNone(renderable_unfollow)
 
 
 class TestGitHubAPIClient(unittest.TestCase):
@@ -185,6 +201,23 @@ class TestGitHubAPIClient(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(mock_request.call_count, 2)
         mock_sleep.assert_called()
+
+    @patch.object(requests.Session, "request")
+    def test_unfollow_user(self, mock_request):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 204
+        mock_resp.headers = {}
+        mock_request.return_value = mock_resp
+
+        success = self.client.unfollow_user("@bad_user")
+        self.assertTrue(success)
+        mock_request.assert_called_once_with(
+            method="DELETE",
+            url="https://api.github.com/user/following/bad_user",
+            params=None,
+            json=None,
+            timeout=30
+        )
 
 
 class TestAutoFollowPipeline(unittest.TestCase):
@@ -265,6 +298,160 @@ class TestAutoFollowPipeline(unittest.TestCase):
 
         self.assertTrue(self.state_mgr.is_previously_followed("new_lead_1"))
         self.assertTrue(self.state_mgr.is_previously_followed("new_lead_2"))
+
+
+class TestUnfollowPipeline(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+        self.tmp.close()
+        self.wl_file = self.tmp.name
+        self.wl_mgr = WhitelistManager(whitelist_file=self.wl_file)
+        self.client = GitHubAPIClient(token="mock_token")
+
+    def tearDown(self):
+        if os.path.exists(self.wl_file):
+            os.unlink(self.wl_file)
+
+    @patch.object(GitHubAPIClient, "unfollow_user")
+    @patch.object(GitHubAPIClient, "fetch_all_followers_set")
+    @patch.object(GitHubAPIClient, "fetch_all_following_set")
+    @patch.object(GitHubAPIClient, "get_authenticated_user")
+    def test_unfollow_non_followers_with_whitelist(
+        self,
+        mock_auth_user,
+        mock_fetch_following,
+        mock_fetch_followers,
+        mock_unfollow_user
+    ):
+        mock_auth_user.return_value = {
+            "login": "myuser",
+            "name": "Me",
+            "followers": 2,
+            "following": 4,
+            "avatar_url": None
+        }
+        # You follow: user_a (mutual), user_b (non-follower), user_vip (non-follower but whitelisted), user_c (non-follower)
+        mock_fetch_following.return_value = {"user_a", "user_b", "user_vip", "user_c"}
+        mock_fetch_followers.return_value = {"user_a"}
+        self.wl_mgr.add("user_vip")
+
+        mock_unfollow_user.return_value = True
+
+        runner = UnfollowRunner(
+            client=self.client,
+            whitelist_mgr=self.wl_mgr,
+            mode="non-followers",
+            limit=5,
+            delay_min=0.01,
+            delay_max=0.02,
+            dry_run=False,
+            interactive=False
+        )
+
+        status = runner.run()
+
+        self.assertEqual(runner.stats["unfollowed_success"], 2)
+        self.assertEqual(runner.stats["skipped_whitelisted"], 1)
+        self.assertEqual(mock_unfollow_user.call_count, 2)
+        mock_unfollow_user.assert_any_call("user_b")
+        mock_unfollow_user.assert_any_call("user_c")
+
+    @patch.object(GitHubAPIClient, "unfollow_user")
+    @patch.object(GitHubAPIClient, "fetch_all_following_set")
+    @patch.object(GitHubAPIClient, "get_authenticated_user")
+    def test_unfollow_all_dry_run(
+        self,
+        mock_auth_user,
+        mock_fetch_following,
+        mock_unfollow_user
+    ):
+        mock_auth_user.return_value = {
+            "login": "myuser",
+            "name": "Me",
+            "followers": 1,
+            "following": 3,
+            "avatar_url": None
+        }
+        mock_fetch_following.return_value = {"user_1", "user_2", "user_vip"}
+        self.wl_mgr.add("user_vip")
+
+        runner = UnfollowRunner(
+            client=self.client,
+            whitelist_mgr=self.wl_mgr,
+            mode="all",
+            limit=10,
+            delay_min=0.01,
+            delay_max=0.02,
+            dry_run=True,
+            interactive=False,
+            force=True
+        )
+
+        runner.run()
+
+        # In dry run, unfollow_user is NOT called, but stats count simulated actions
+        self.assertEqual(runner.stats["unfollowed_success"], 2)
+        self.assertEqual(runner.stats["skipped_whitelisted"], 1)
+        self.assertEqual(mock_unfollow_user.call_count, 0)
+
+
+class TestInteractiveSession(unittest.TestCase):
+    @patch.object(GitHubAPIClient, "get_user_info")
+    @patch.object(GitHubAPIClient, "get_authenticated_user")
+    def test_interactive_commands_and_toolkit(self, mock_auth_user, mock_user_info):
+        mock_auth_user.return_value = {
+            "login": "myuser",
+            "name": "Me",
+            "followers": 10,
+            "following": 5,
+            "public_repos": 3,
+            "created_at": "2022-01-01T00:00:00Z"
+        }
+        mock_user_info.return_value = {"login": "octocat", "followers": 1000}
+
+        session = InteractiveSession(token="mock_token")
+        session.initialize()
+
+        # Test set target
+        session.handle_command("set target octocat")
+        self.assertEqual(session.target_username, "octocat")
+        self.assertIsNotNone(session.target_info)
+
+        # Test set limit
+        session.handle_command("set limit 75")
+        self.assertEqual(session.max_follows, 75)
+
+        # Test set delay
+        session.handle_command("set delay 3.0 6.0")
+        self.assertEqual(session.delay_min, 3.0)
+        self.assertEqual(session.delay_max, 6.0)
+
+        # Test set dry-run
+        session.handle_command("set dry-run on")
+        self.assertTrue(session.dry_run)
+
+        session.handle_command("set dry-run off")
+        self.assertFalse(session.dry_run)
+
+        # Test whitelist commands
+        session.handle_command("wl add torvalds octocat")
+        self.assertTrue(session.whitelist_mgr.is_whitelisted("torvalds"))
+        self.assertTrue(session.whitelist_mgr.is_whitelisted("octocat"))
+
+        session.handle_command("wl rm torvalds")
+        self.assertFalse(session.whitelist_mgr.is_whitelisted("torvalds"))
+        self.assertTrue(session.whitelist_mgr.is_whitelisted("octocat"))
+
+        session.handle_command("wl clear")
+        self.assertEqual(len(session.whitelist_mgr.list()), 0)
+
+        # Test show / status command
+        session.handle_command("status")
+        self.assertEqual(session.auth_user["login"], "myuser")
+
+        # Test exit
+        cont = session.handle_command("exit")
+        self.assertFalse(cont)
 
 
 if __name__ == "__main__":

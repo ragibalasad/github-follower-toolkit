@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GitHub Auto-Follow Script (Fastfetch TUI powered by Rich)
+GitHub Follower Toolkit (Fastfetch TUI powered by Rich)
 ---------------------------------------------------------
 Efficiently fetches followers of a target GitHub user and follows them
 only if they do not already follow the authenticated user and are not already followed.
@@ -27,6 +27,7 @@ try:
     from dotenv import load_dotenv
     from rich.console import Console, Group
     from rich.live import Live
+    from rich.markup import escape
     from rich.panel import Panel
     from rich.progress import ProgressBar
     from rich.rule import Rule
@@ -48,19 +49,19 @@ except ImportError:
 # Global Rich console instance
 console = Console(highlight=False)
 
-APP_NAME = "ActiveFollow"
+APP_NAME = "FollowerToolkit"
 APP_VERSION = "v1.0"
 
 
 def enter_alternate_screen() -> None:
-    """Switches terminal to Alternate Screen Buffer with zero scrollback history."""
-    sys.stdout.write("\033[?1049h\033[H\033[2J\033[3J")
+    """Clears the screen and positions cursor at top-left while preserving terminal scrollback."""
+    sys.stdout.write("\033[2J\033[H")
     sys.stdout.flush()
 
 
 def exit_alternate_screen() -> None:
-    """Restores primary terminal buffer and unhides cursor."""
-    sys.stdout.write("\033[?1049l\033[?25h")
+    """Restores cursor visibility."""
+    sys.stdout.write("\033[?25h")
     sys.stdout.flush()
 
 
@@ -248,43 +249,77 @@ def build_dashboard_renderable(
 
     # Live progress bar if stats provided
     if live_stats:
-        followed = live_stats.get("followed_success", 0)
-        examined = live_stats.get("total_examined", 0)
-        skipped_follows = live_stats.get("skipped_already_follows_me", 0)
-        skipped_following = live_stats.get("skipped_already_following", 0)
-        skipped_history = live_stats.get("skipped_state_history", 0)
-        skipped_total = skipped_follows + skipped_following + skipped_history
-        pct = min(1.0, followed / max(1, max_follows))
-        pct_int = int(pct * 100)
+        op_type = live_stats.get("op_type", "follow")
+        if op_type == "unfollow":
+            unfollowed = live_stats.get("unfollowed_success", 0)
+            target_total = live_stats.get("target_total", max_follows) or 1
+            whitelisted = live_stats.get("skipped_whitelisted", 0)
+            pct = min(1.0, unfollowed / max(1, target_total))
+            pct_int = int(pct * 100)
 
-        progress_bar = ProgressBar(
-            total=max_follows,
-            completed=followed,
-            width=20,
-            style="bright_black",
-            complete_style="bold green"
-        )
-        
-        progress_grid = Table.grid(padding=(0, 1))
-        progress_grid.add_column(justify="left")
-        progress_grid.add_column(justify="left")
-        progress_grid.add_column(justify="left")
-        
-        stats_text = Text(" ")
-        stats_text.append(f"[{followed}/{max_follows}]", style="bold green")
-        stats_text.append(f" ({pct_int}%)", style="bold cyan")
-        stats_text.append(" | ", style="dim bright_black")
-        stats_text.append(f"Examined: {examined}", style="dim")
-        stats_text.append(" | ", style="dim bright_black")
-        stats_text.append(f"Skipped: {skipped_total}", style="dim yellow")
-        
-        progress_grid.add_row(
-            Text("  Progress: ", style="bold white"),
-            progress_bar,
-            stats_text
-        )
-        renderables.append(Text(""))
-        renderables.append(progress_grid)
+            progress_bar = ProgressBar(
+                total=target_total,
+                completed=unfollowed,
+                width=20,
+                style="bright_black",
+                complete_style="bold magenta"
+            )
+            progress_grid = Table.grid(padding=(0, 1))
+            progress_grid.add_column(justify="left")
+            progress_grid.add_column(justify="left")
+            progress_grid.add_column(justify="left")
+
+            stats_text = Text(" ")
+            stats_text.append(f"[{unfollowed}/{target_total}]", style="bold magenta")
+            stats_text.append(f" ({pct_int}%)", style="bold cyan")
+            stats_text.append(" | ", style="dim bright_black")
+            stats_text.append(f"Protected (Whitelist): {whitelisted}", style="bold yellow")
+
+            progress_grid.add_row(
+                Text("  Progress: ", style="bold white"),
+                progress_bar,
+                stats_text
+            )
+            renderables.append(Text(""))
+            renderables.append(progress_grid)
+        else:
+            followed = live_stats.get("followed_success", 0)
+            examined = live_stats.get("total_examined", 0)
+            skipped_follows = live_stats.get("skipped_already_follows_me", 0)
+            skipped_following = live_stats.get("skipped_already_following", 0)
+            skipped_history = live_stats.get("skipped_state_history", 0)
+            skipped_total = skipped_follows + skipped_following + skipped_history
+            pct = min(1.0, followed / max(1, max_follows))
+            pct_int = int(pct * 100)
+
+            progress_bar = ProgressBar(
+                total=max_follows,
+                completed=followed,
+                width=20,
+                style="bright_black",
+                complete_style="bold green"
+            )
+            
+            progress_grid = Table.grid(padding=(0, 1))
+            progress_grid.add_column(justify="left")
+            progress_grid.add_column(justify="left")
+            progress_grid.add_column(justify="left")
+            
+            stats_text = Text(" ")
+            stats_text.append(f"[{followed}/{max_follows}]", style="bold green")
+            stats_text.append(f" ({pct_int}%)", style="bold cyan")
+            stats_text.append(" | ", style="dim bright_black")
+            stats_text.append(f"Examined: {examined}", style="dim")
+            stats_text.append(" | ", style="dim bright_black")
+            stats_text.append(f"Skipped: {skipped_total}", style="dim yellow")
+            
+            progress_grid.add_row(
+                Text("  Progress: ", style="bold white"),
+                progress_bar,
+                stats_text
+            )
+            renderables.append(Text(""))
+            renderables.append(progress_grid)
 
     # Status message line
     if status_msg:
@@ -377,6 +412,73 @@ class StateManager:
             "last_run": None,
             "total_followed_all_time": 0
         }
+        self.save()
+
+
+# ==============================================================================
+# Whitelist Manager
+# ==============================================================================
+
+class WhitelistManager:
+    """Manages protected GitHub users stored in .whitelist.json."""
+
+    def __init__(self, whitelist_file: str = ".whitelist.json") -> None:
+        self.whitelist_path = Path(whitelist_file)
+        self.whitelist: Set[str] = set()
+        self.load()
+
+    def load(self) -> None:
+        if self.whitelist_path.exists():
+            try:
+                with open(self.whitelist_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        self.whitelist = {u.strip().lstrip("@").lower() for u in data if isinstance(u, str) and u.strip()}
+                    elif isinstance(data, dict) and "whitelist" in data:
+                        self.whitelist = {u.strip().lstrip("@").lower() for u in data["whitelist"] if isinstance(u, str) and u.strip()}
+            except Exception as e:
+                console.print(f"[yellow][WARN][/yellow] Could not load whitelist from {self.whitelist_path}: {e}.")
+
+    def save(self) -> None:
+        try:
+            with open(self.whitelist_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "whitelist": sorted(list(self.whitelist)),
+                    "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                }, f, indent=2)
+        except Exception as e:
+            console.print(f"[red][ERROR][/red] Failed to save whitelist to {self.whitelist_path}: {e}")
+
+    def is_whitelisted(self, username: str) -> bool:
+        return username.strip().lstrip("@").lower() in self.whitelist
+
+    def add(self, *usernames: str) -> List[str]:
+        added: List[str] = []
+        for u in usernames:
+            cleaned = u.strip().lstrip("@").lower()
+            if cleaned and cleaned not in self.whitelist:
+                self.whitelist.add(cleaned)
+                added.append(cleaned)
+        if added:
+            self.save()
+        return added
+
+    def remove(self, *usernames: str) -> List[str]:
+        removed: List[str] = []
+        for u in usernames:
+            cleaned = u.strip().lstrip("@").lower()
+            if cleaned in self.whitelist:
+                self.whitelist.remove(cleaned)
+                removed.append(cleaned)
+        if removed:
+            self.save()
+        return removed
+
+    def list(self) -> List[str]:
+        return sorted(list(self.whitelist))
+
+    def clear(self) -> None:
+        self.whitelist.clear()
         self.save()
 
 
@@ -584,12 +686,21 @@ class GitHubAPIClient:
             page += 1
 
     def follow_user(self, username: str) -> bool:
-        endpoint = f"/user/following/{username}"
+        endpoint = f"/user/following/{username.lstrip('@')}"
         resp = self.request("PUT", endpoint)
         if resp.status_code in (204, 200):
             return True
         else:
             console.print(f"[red][ERROR][/red] Failed to follow '{username}': HTTP {resp.status_code} - {resp.text}")
+            return False
+
+    def unfollow_user(self, username: str) -> bool:
+        endpoint = f"/user/following/{username.lstrip('@')}"
+        resp = self.request("DELETE", endpoint)
+        if resp.status_code in (204, 200):
+            return True
+        else:
+            console.print(f"[red][ERROR][/red] Failed to unfollow '{username}': HTTP {resp.status_code} - {resp.text}")
             return False
 
 
@@ -855,6 +966,236 @@ class AutoFollowRunner:
 
 
 # ==============================================================================
+# Unfollow Pipeline Runner
+# ==============================================================================
+
+class UnfollowRunner:
+    """Coordinates discovering candidates, whitelist filtering, rate-limit pacing, and execution for unfollow."""
+
+    def __init__(
+        self,
+        client: GitHubAPIClient,
+        whitelist_mgr: WhitelistManager,
+        mode: str = "non-followers",  # "non-followers", "all", "user"
+        target_user: Optional[str] = None,
+        limit: Optional[int] = None,
+        delay_min: float = 2.0,
+        delay_max: float = 4.0,
+        dry_run: bool = False,
+        interactive: bool = False,
+        verbose: bool = False,
+        force: bool = False,
+        auth_user_cache: Optional[Dict[str, Any]] = None,
+        avatar_lines_cache: Optional[List[str]] = None
+    ) -> None:
+        self.client = client
+        self.whitelist_mgr = whitelist_mgr
+        self.mode = mode
+        self.target_user = target_user
+        self.limit = limit
+        self.delay_min = max(0.5, delay_min)
+        self.delay_max = max(self.delay_min, delay_max)
+        self.dry_run = dry_run
+        self.interactive = interactive
+        self.verbose = verbose
+        self.force = force
+        self.interrupted = False
+        self.auth_user_cache = auth_user_cache
+        self.avatar_lines_cache = avatar_lines_cache
+
+        self.stats = {
+            "op_type": "unfollow",
+            "total_candidates": 0,
+            "unfollowed_success": 0,
+            "unfollowed_failed": 0,
+            "skipped_whitelisted": 0,
+            "target_total": 0
+        }
+
+    def _handle_interrupt(self, signum: int, frame: Any) -> None:
+        self.interrupted = True
+
+    def run(self) -> str:
+        """Runs the unfollow pipeline. Returns status message."""
+        old_sigint = signal.getsignal(signal.SIGINT)
+        old_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGINT, self._handle_interrupt)
+        signal.signal(signal.SIGTERM, self._handle_interrupt)
+
+        final_status = ""
+
+        try:
+            auth_user = self.auth_user_cache or self.client.get_authenticated_user()
+            auth_login = auth_user["login"]
+            avatar_lines = self.avatar_lines_cache or fetch_avatar_ansi(auth_user.get("avatar_url"), self.client.session)
+
+            use_live = (self.interactive and not self.verbose)
+
+            def update_live_ui(status_msg: str) -> None:
+                if use_live:
+                    dashboard = build_dashboard_renderable(
+                        auth_user=auth_user,
+                        target_info={"login": f"ufollow ({self.mode})", "followers": self.stats["target_total"]},
+                        api_remaining=self.client.rate_limit_remaining,
+                        api_limit=self.client.rate_limit_limit,
+                        max_follows=self.stats["target_total"] or 1,
+                        delay_min=self.delay_min,
+                        delay_max=self.delay_max,
+                        dry_run=self.dry_run,
+                        avatar_lines=avatar_lines,
+                        live_stats=self.stats,
+                        status_msg=status_msg
+                    )
+                    render_frame_in_place(dashboard, show_cursor=False)
+
+            if use_live:
+                update_live_ui("[cyan]Fetching relationship & whitelist cache...[/cyan]")
+            elif not self.interactive or self.verbose:
+                render_neofetch_banner(
+                    auth_user=auth_user,
+                    target_info={"login": f"ufollow ({self.mode})", "followers": 0},
+                    api_remaining=self.client.rate_limit_remaining,
+                    api_limit=self.client.rate_limit_limit,
+                    max_follows=self.limit or 0,
+                    delay_min=self.delay_min,
+                    delay_max=self.delay_max,
+                    dry_run=self.dry_run,
+                    avatar_lines=avatar_lines
+                )
+                console.print(f"[bold]── Step 1: Pre-fetching Relationship & Whitelist Cache ───────────────[/bold]")
+
+            # 1. Collect candidates
+            candidates: List[str] = []
+
+            if self.mode == "user" and self.target_user:
+                cand = self.target_user.lstrip("@").lower()
+                candidates = [cand]
+            else:
+                if not use_live:
+                    console.print(f"[blue][INFO][/blue] Fetching accounts you follow (@{auth_login})...")
+                following_set = self.client.fetch_all_following_set()
+                if not use_live:
+                    console.print(f"[green][SUCCESS][/green] Cached {len(following_set)} account(s) you follow.")
+
+                if self.mode == "non-followers":
+                    if not use_live:
+                        console.print(f"[blue][INFO][/blue] Fetching accounts that follow you (@{auth_login})...")
+                    followers_set = self.client.fetch_all_followers_set()
+                    if not use_live:
+                        console.print(f"[green][SUCCESS][/green] Cached {len(followers_set)} follower(s).")
+                    candidates = [u for u in following_set if u not in followers_set]
+                elif self.mode == "all":
+                    candidates = list(following_set)
+
+            # Filter candidates against Whitelist
+            filtered_candidates: List[str] = []
+            for u in candidates:
+                if self.whitelist_mgr.is_whitelisted(u):
+                    self.stats["skipped_whitelisted"] += 1
+                else:
+                    filtered_candidates.append(u)
+
+            total_found = len(filtered_candidates)
+            self.stats["total_candidates"] = total_found
+            max_to_process = min(total_found, self.limit) if self.limit else total_found
+            self.stats["target_total"] = max_to_process
+
+            if total_found == 0:
+                msg = f"[green]No candidates to unfollow in '{self.mode}' mode (Whitelisted protected: {self.stats['skipped_whitelisted']}).[/green]"
+                if use_live:
+                    update_live_ui(msg)
+                else:
+                    console.print(msg)
+                return msg
+
+            # Safety Confirmation for 'all' mode
+            if self.mode == "all" and not self.force and not self.dry_run:
+                if not self.interactive:
+                    console.print(f"[bold red][WARNING][/bold red] This will unfollow ALL {max_to_process} accounts!")
+                    try:
+                        confirm = input("Are you sure you want to proceed? [y/N]: ").strip().lower()
+                    except (KeyboardInterrupt, EOFError):
+                        confirm = "no"
+                    if confirm not in ("y", "yes"):
+                        return "[yellow]Unfollow cancelled by user.[/yellow]"
+
+            if not use_live:
+                console.print(f"\n[bold]── Step 2: Unfollowing Candidates (Target: {max_to_process}, Delay: {self.delay_min:.1f}s-{self.delay_max:.1f}s) ───────[/bold]")
+
+            candidates_to_unfollow = filtered_candidates[:max_to_process]
+
+            for idx, username in enumerate(candidates_to_unfollow, 1):
+                if self.interrupted:
+                    final_status = f"[yellow]Stopped by user (Ctrl+C). Unfollowed {self.stats['unfollowed_success']} accounts.[/yellow]"
+                    update_live_ui(final_status)
+                    break
+
+                step_info = f"[{idx}/{max_to_process}] Unfollowing @{username}..."
+                if self.verbose or not self.interactive:
+                    console.print(f"[blue][INFO][/blue] {step_info}")
+
+                if self.dry_run:
+                    self.stats["unfollowed_success"] += 1
+                    status_text = f"[bold magenta][DRY-RUN][/bold magenta] Simulated unfollow @{username}."
+                    if use_live:
+                        update_live_ui(status_text)
+                    elif self.verbose:
+                        console.print(f"[magenta][DRY-RUN][/magenta] Would unfollow @{username}.")
+                    continue
+
+                success = self.client.unfollow_user(username)
+                if success:
+                    self.stats["unfollowed_success"] += 1
+                    status_text = f"[green][SUCCESS][/green] Unfollowed @{username}."
+                    if not use_live and self.verbose:
+                        console.print(f"[green][SUCCESS][/green] Unfollowed @{username}!")
+                else:
+                    self.stats["unfollowed_failed"] += 1
+                    status_text = f"[red][ERROR][/red] Failed to unfollow @{username}."
+
+                if idx < max_to_process:
+                    sleep_sec = random.uniform(self.delay_min, self.delay_max)
+                    pacing_msg = f"{status_text} (Pacing: sleeping {sleep_sec:.2f}s)"
+                    update_live_ui(pacing_msg)
+                    if not use_live and self.verbose:
+                        console.print(f"       Pacing delay: sleeping {sleep_sec:.2f}s...")
+                    time.sleep(sleep_sec)
+                else:
+                    update_live_ui(status_text)
+
+            if not self.interrupted:
+                mode_label = "Simulated" if self.dry_run else "Successfully"
+                final_status = f"[green]{mode_label} unfollowed {self.stats['unfollowed_success']} user(s). Whitelisted protected: {self.stats['skipped_whitelisted']}.[/green]"
+                update_live_ui(final_status)
+
+            if not self.interactive or self.verbose:
+                self._print_summary(total_found)
+
+            return final_status
+
+        finally:
+            signal.signal(signal.SIGINT, old_sigint)
+            signal.signal(signal.SIGTERM, old_sigterm)
+
+    def _print_summary(self, total_found: int) -> None:
+        table = Table(title="Unfollow Execution Summary", border_style="cyan", show_header=False)
+        table.add_column("Metric", style="bold white")
+        table.add_column("Value", style="cyan")
+
+        table.add_row("Total Target Candidates", str(total_found))
+        table.add_row("Successfully Unfollowed", f"[green]{self.stats['unfollowed_success']}[/green]")
+        if self.stats["unfollowed_failed"] > 0:
+            table.add_row("Failed Unfollows", f"[red]{self.stats['unfollowed_failed']}[/red]")
+        table.add_row("Protected by Whitelist", f"[yellow]{self.stats['skipped_whitelisted']}[/yellow]")
+        table.add_row("Remaining API Quota", f"{self.client.rate_limit_remaining}/{self.client.rate_limit_limit}")
+
+        console.print("")
+        console.print(table)
+        console.print(get_developer_watermark_divider(68))
+        console.print("")
+
+
+# ==============================================================================
 # Interactive REPL Environment
 # ==============================================================================
 
@@ -865,6 +1206,7 @@ class InteractiveSession:
         self.token = token
         self.client = GitHubAPIClient(token=self.token)
         self.state_mgr = StateManager()
+        self.whitelist_mgr = WhitelistManager()
 
         self.target_username = default_target
         self.target_info: Optional[Dict[str, Any]] = None
@@ -912,23 +1254,100 @@ class InteractiveSession:
         render_frame_in_place(dashboard, show_cursor=True)
 
     def print_help_screen(self) -> None:
+        try:
+            with console.pager(styles=True):
+                console.print("\n[bold cyan]GitHub Follower Toolkit - Command Reference Manual[/bold cyan]\n")
+                console.print("[bold cyan]SYNOPSIS[/bold cyan]")
+                console.print("  [bold white]run[/bold white] [-v]")
+                syn_uf = escape("[-n | -a] [-l <N>] [-d <min> [max]] [-s] [-f] [-v]")
+                console.print(f"  [bold white]ufollow[/bold white] [bold green]{syn_uf}[/bold green]")
+                console.print(f"  [bold white]ufollow[/bold white] [bold green]<username>[/bold green] [bold green]{escape('[-s]')}[/bold green]")
+                console.print("  [bold white]wl[/bold white] [bold green]<add | rm>[/bold green] <username...>")
+                console.print("  [bold white]wl[/bold white] [bold green]<list | clear>[/bold green]")
+                console.print("  [bold white]set[/bold white] [bold green]<target | limit | delay | dry-run | token>[/bold green] <value>")
+                console.print("  [bold white]show[/bold white] | [bold white]clear-state[/bold white] | [bold white]help[/bold white] | [bold white]exit[/bold white]\n")
+
+                console.print("[bold cyan]COMMANDS[/bold cyan]")
+                commands = [
+                    ("run", "Execute auto-follow pipeline for current target user"),
+                    ("ufollow, uf, rm", "Execute unfollow pipeline with rate-limit protection"),
+                    ("wl, whitelist", "Manage persistent protected VIP whitelist (.whitelist.json)"),
+                    ("set", "Modify runtime session configuration parameters"),
+                    ("show, status", "Refresh profile specs, API quota, and system dashboard"),
+                    ("clear-state", "Purge local follow history cache (.follow_state.json)"),
+                    ("help, ?", "Display this command reference manual"),
+                    ("exit, quit, q", "Terminate interactive toolkit session"),
+                ]
+                for cmd_name, desc in commands:
+                    pad = " " * max(2, 22 - len(cmd_name))
+                    console.print(f"  [bold green]{cmd_name}[/bold green]{pad}{desc}")
+                console.print("")
+
+                console.print("[bold cyan]UFOLLOW OPTIONS[/bold cyan]")
+                uf_options = [
+                    ("-n, --non-followers", "Target accounts that do not follow back (default)"),
+                    ("-a, --all", "Target all accounts currently followed"),
+                    ("-l, --limit <N>", "Maximum number of accounts to process in session"),
+                    ("-d, --delay <min> [max]", "Random jitter pacing delay in seconds (default: 2.0 4.0)"),
+                    ("-s, --dry-run", "Simulate execution without modifying following list"),
+                    ("-f, --force", "Bypass confirmation prompt on destructive actions (-a)"),
+                    ("-v, --verbose", "Stream detailed execution logs in real-time"),
+                ]
+                for opt_name, desc in uf_options:
+                    pad = " " * max(2, 26 - len(opt_name))
+                    console.print(f"  [bold yellow]{escape(opt_name)}[/bold yellow]{pad}{desc}")
+                console.print("")
+
+                console.print("[bold cyan]CONFIGURATION KEYS (set)[/bold cyan]")
+                set_keys = [
+                    ("target <username>", "Target GitHub account to harvest followers from"),
+                    ("limit <N>", "Default session follow/unfollow limit"),
+                    ("delay <min> [max]", "Default pacing delay range in seconds"),
+                    ("dry-run <on|off>", "Toggle global simulation mode"),
+                    ("token <ghp_token>", "Switch active GitHub Personal Access Token"),
+                ]
+                for key_name, desc in set_keys:
+                    pad = " " * max(2, 22 - len(key_name))
+                    console.print(f"  [bold green]{escape(key_name)}[/bold green]{pad}{desc}")
+                console.print("")
+
+                console.print("[bold cyan]EXAMPLES[/bold cyan]")
+                console.print("  [dim]#[/dim] Follow target's followers:")
+                console.print("    [bold white]set target torvalds[/bold white]")
+                console.print("    [bold white]run[/bold white]\n")
+                console.print("  [dim]#[/dim] Unfollow up to 30 non-followers:")
+                console.print("    [bold white]ufollow -n -l 30[/bold white]\n")
+                console.print("  [dim]#[/dim] Add accounts to protected whitelist:")
+                console.print("    [bold white]wl add torvalds octocat[/bold white]\n")
+                console.print("  [dim]#[/dim] Mass unfollow all followed accounts:")
+                console.print("    [bold white]ufollow -a -f[/bold white]\n")
+        finally:
+            self.redraw_screen()
+
+    def _display_whitelist_table(self) -> None:
         self.redraw_screen()
-        help_table = Table(title="Interactive Commands Reference", border_style="cyan")
-        help_table.add_column("Command", style="bold green", no_wrap=True)
-        help_table.add_column("Example / Description", style="white")
+        wl_users = self.whitelist_mgr.list()
+        if not wl_users:
+            console.print("\n  [yellow]Protected whitelist is currently empty.[/yellow]\n")
+            return
 
-        help_table.add_row("set target <username>", "Set target user whose followers to extract (e.g. set target torvalds)")
-        help_table.add_row("set limit <number>", "Set max follows for session (e.g. set limit 30)")
-        help_table.add_row("set delay <min> <max>", "Set pacing delay range in seconds (e.g. set delay 2.5 5.0)")
-        help_table.add_row("set dry-run <on|off>", "Toggle simulation dry-run mode")
-        help_table.add_row("set token <ghp_token>", "Update GitHub PAT token")
-        help_table.add_row("show / status", "Refresh and redraw profile & settings")
-        help_table.add_row("clear-state", "Reset local followed history cache (.follow_state.json)")
-        help_table.add_row("run", "Start execution with live in-place single-line status")
-        help_table.add_row("run -v / run --verbose", "Start execution with scrolling verbose logs")
-        help_table.add_row("exit / quit", "Exit the program")
+        table = Table(title=f"Protected Whitelist Accounts ({len(wl_users)})", border_style="cyan", show_header=True)
+        table.add_column("#", style="dim", width=4, justify="right")
+        table.add_column("Username", style="bold white")
+        table.add_column("Status", style="bold yellow")
+        table.add_column("GitHub Profile", style="dim blue")
 
-        console.print(help_table)
+        for idx, username in enumerate(wl_users, 1):
+            table.add_row(
+                str(idx),
+                f"@{username}",
+                "Protected (VIP)",
+                f"https://github.com/{username}"
+            )
+
+        console.print("")
+        console.print(table)
+        console.print("")
 
     def handle_command(self, cmd_line: str) -> bool:
         """Processes an interactive command and updates status in place. Returns False to exit."""
@@ -948,11 +1367,142 @@ class InteractiveSession:
             return True
 
         elif cmd in ("show", "status", "info"):
-            self.redraw_screen("[green]Profile & configuration refreshed.[/green]")
+            self.redraw_screen("[cyan]Fetching latest live stats and API quota from GitHub...[/cyan]")
+            try:
+                self.auth_user = self.client.get_authenticated_user()
+                if self.target_username:
+                    self.target_info = self.client.get_user_info(self.target_username)
+                now_str = datetime.datetime.now().strftime("%H:%M:%S")
+                self.redraw_screen(f"[green]Stats and API quota synced from GitHub ({now_str}).[/green]")
+            except Exception as e:
+                self.redraw_screen(f"[red]Failed to refresh stats from GitHub: {e}[/red]")
 
         elif cmd == "clear-state":
             self.state_mgr.clear()
             self.redraw_screen("[green]Local history cache cleared successfully.[/green]")
+
+        elif cmd in ("wl", "whitelist", "keep", "pin", "vip"):
+            if not args:
+                self._display_whitelist_table()
+                return True
+
+            sub = args[0].lower()
+            val_args = args[1:]
+
+            if sub in ("add", "-a", "+"):
+                if not val_args:
+                    self.redraw_screen("[yellow]Usage: wl add <username1> [username2...][/yellow]")
+                else:
+                    added = self.whitelist_mgr.add(*val_args)
+                    if added:
+                        users_str = ", ".join(f"@{u}" for u in added)
+                        self.redraw_screen(f"[green]Added to whitelist: {users_str}[/green]")
+                    else:
+                        self.redraw_screen("[yellow]User(s) already in whitelist.[/yellow]")
+
+            elif sub in ("rm", "del", "delete", "remove", "-d", "-"):
+                if not val_args:
+                    self.redraw_screen("[yellow]Usage: wl rm <username1> [username2...][/yellow]")
+                else:
+                    removed = self.whitelist_mgr.remove(*val_args)
+                    if removed:
+                        users_str = ", ".join(f"@{u}" for u in removed)
+                        self.redraw_screen(f"[green]Removed from whitelist: {users_str}[/green]")
+                    else:
+                        self.redraw_screen("[yellow]User(s) not found in whitelist.[/yellow]")
+
+            elif sub in ("ls", "list", "show"):
+                self._display_whitelist_table()
+
+            elif sub == "clear":
+                self.whitelist_mgr.clear()
+                self.redraw_screen("[green]Whitelist cleared successfully.[/green]")
+
+            else:
+                self.redraw_screen(f"[yellow]Unknown whitelist subcommand '{sub}'. Usage: wl <add|rm|list|clear>[/yellow]")
+
+        elif cmd in ("ufollow", "uf", "rm", "unfollow"):
+            # Parse flags for ufollow
+            mode = "non-followers"
+            target_user = None
+            limit = self.max_follows
+            dry_run = self.dry_run
+            force = False
+            verbose = False
+            delay_min = self.delay_min
+            delay_max = self.delay_max
+
+            i = 0
+            while i < len(args):
+                arg = args[i]
+                if arg in ("-n", "--non-followers", "--non-mutuals"):
+                    mode = "non-followers"
+                elif arg in ("-a", "--all"):
+                    mode = "all"
+                elif arg in ("-f", "--force", "-y", "--yes"):
+                    force = True
+                elif arg in ("-s", "--dry-run", "--simulate"):
+                    dry_run = True
+                elif arg in ("--live",):
+                    dry_run = False
+                elif arg in ("-v", "--verbose"):
+                    verbose = True
+                elif arg in ("-l", "--limit", "-m", "--max"):
+                    if i + 1 < len(args):
+                        try:
+                            limit = int(args[i + 1])
+                            i += 1
+                        except ValueError:
+                            pass
+                elif arg in ("-d", "--delay"):
+                    if i + 2 < len(args) and not args[i + 1].startswith("-") and not args[i + 2].startswith("-"):
+                        try:
+                            delay_min = float(args[i + 1])
+                            delay_max = float(args[i + 2])
+                            i += 2
+                        except ValueError:
+                            pass
+                    elif i + 1 < len(args) and not args[i + 1].startswith("-"):
+                        try:
+                            delay_min = float(args[i + 1])
+                            delay_max = delay_min + 2.0
+                            i += 1
+                        except ValueError:
+                            pass
+                elif arg.startswith("@") or (not arg.startswith("-") and not target_user and mode != "all"):
+                    target_user = arg.lstrip("@")
+                    mode = "user"
+                i += 1
+
+            if mode == "all" and not force and not dry_run:
+                self.redraw_screen()
+                console.print("\n  [bold red][WARNING][/bold red] This will unfollow ALL accounts you follow (excluding whitelist)!")
+                try:
+                    ans = input("  Are you sure you want to proceed? [y/N]: ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    ans = "no"
+                if ans not in ("y", "yes"):
+                    self.redraw_screen("[yellow]Unfollow all cancelled by user.[/yellow]")
+                    return True
+
+            runner = UnfollowRunner(
+                client=self.client,
+                whitelist_mgr=self.whitelist_mgr,
+                mode=mode,
+                target_user=target_user,
+                limit=limit,
+                delay_min=delay_min,
+                delay_max=delay_max,
+                dry_run=dry_run,
+                interactive=True,
+                verbose=verbose,
+                force=force,
+                auth_user_cache=self.auth_user,
+                avatar_lines_cache=self.avatar_lines
+            )
+            result_status = runner.run()
+            if not verbose:
+                self.redraw_screen(result_status)
 
         elif cmd == "set":
             if not args:
@@ -981,9 +1531,9 @@ class InteractiveSession:
                 else:
                     try:
                         self.max_follows = max(1, int(val_args[0]))
-                        self.redraw_screen(f"[green]Session follow limit set to {self.max_follows}.[/green]")
+                        self.redraw_screen(f"[green]Session limit set to {self.max_follows}.[/green]")
                     except ValueError:
-                        self.redraw_screen("[red]Invalid number for follow limit.[/red]")
+                        self.redraw_screen("[red]Invalid number for limit.[/red]")
 
             elif sub in ("delay", "pacing"):
                 if len(val_args) == 1:
@@ -1059,7 +1609,8 @@ class InteractiveSession:
 
             while True:
                 try:
-                    prompt_str = f"  \033[1;96mgithub-follow\033[0m \033[90m❯\033[0m "
+                    mode_badge = "\001\033[1;35m\002[dry-run]\001\033[0m\002" if self.dry_run else "\001\033[1;32m\002[live]\033[0m\002"
+                    prompt_str = f"  \001\033[1;96m\002ghf-toolkit\001\033[0m\002 {mode_badge} \001\033[90m\002❯\001\033[0m\002 "
                     cmd_line = input(prompt_str)
                     should_continue = self.handle_command(cmd_line)
                     if not should_continue:
@@ -1068,7 +1619,7 @@ class InteractiveSession:
                     break
         finally:
             exit_alternate_screen()
-            console.print("\n  [cyan]Exited GitHub Follow TUI. Goodbye! 👋[/cyan]\n")
+            console.print("\n  [cyan]Exited Follower Toolkit TUI. Goodbye![/cyan]\n")
 
 
 # ==============================================================================
@@ -1142,8 +1693,90 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    args = parse_args()
+    load_dotenv()
+    token = os.getenv("GITHUB_TOKEN", "")
 
+    # Check for CLI subcommands
+    if len(sys.argv) > 1:
+        subcmd = sys.argv[1].lower()
+
+        if subcmd in ("wl", "whitelist", "keep", "pin", "vip"):
+            wl_mgr = WhitelistManager()
+            wl_args = sys.argv[2:]
+            if not wl_args or wl_args[0] in ("ls", "list", "show"):
+                users = wl_mgr.list()
+                if not users:
+                    console.print("[yellow]Protected whitelist is currently empty.[/yellow]")
+                else:
+                    table = Table(title=f"Protected Whitelist Accounts ({len(users)})", border_style="cyan")
+                    table.add_column("#", justify="right", style="dim", width=4)
+                    table.add_column("Username", style="bold white")
+                    table.add_column("Role", style="bold yellow")
+                    for i, u in enumerate(users, 1):
+                        table.add_row(str(i), f"@{u}", "Protected (VIP)")
+                    console.print(table)
+                return
+
+            action = wl_args[0].lower()
+            targets = wl_args[1:]
+            if action in ("add", "-a", "+"):
+                if not targets:
+                    console.print("[yellow]Usage: auto_follow.py wl add <user1> [user2...][/yellow]")
+                else:
+                    added = wl_mgr.add(*targets)
+                    console.print(f"[green]Added {len(added)} user(s) to whitelist: {', '.join('@' + u for u in added)}[/green]")
+            elif action in ("rm", "del", "delete", "remove", "-d", "-"):
+                if not targets:
+                    console.print("[yellow]Usage: auto_follow.py wl rm <user1> [user2...][/yellow]")
+                else:
+                    removed = wl_mgr.remove(*targets)
+                    console.print(f"[green]Removed {len(removed)} user(s) from whitelist: {', '.join('@' + u for u in removed)}[/green]")
+            elif action == "clear":
+                wl_mgr.clear()
+                console.print("[green]Whitelist cleared.[/green]")
+            else:
+                console.print(f"[yellow]Unknown wl action '{action}'. Usage: wl <add|rm|ls|clear>[/yellow]")
+            return
+
+
+        elif subcmd in ("ufollow", "uf", "rm", "unfollow"):
+            if not token:
+                console.print("[red][ERROR][/red] GITHUB_TOKEN environment variable required for 'ufollow' command.")
+                sys.exit(1)
+            uf_parser = argparse.ArgumentParser(prog="auto_follow.py ufollow", description="Unfollow non-followers or all accounts with safety whitelists.")
+            uf_parser.add_argument("-n", "--non-followers", action="store_true", default=True, help="Unfollow non-followers (default)")
+            uf_parser.add_argument("-a", "--all", action="store_true", help="Unfollow ALL accounts you follow")
+            uf_parser.add_argument("user", nargs="?", default=None, help="Specific user to unfollow")
+            uf_parser.add_argument("-l", "--limit", type=int, default=None, help="Max accounts to unfollow")
+            uf_parser.add_argument("-d", "--delay-min", type=float, default=2.0, help="Min pacing delay (default: 2.0s)")
+            uf_parser.add_argument("--delay-max", type=float, default=4.0, help="Max pacing delay (default: 4.0s)")
+            uf_parser.add_argument("-s", "--dry-run", action="store_true", help="Simulate without making mutations")
+            uf_parser.add_argument("-f", "--force", "-y", "--yes", action="store_true", help="Skip confirmation prompt")
+            uf_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose streaming logs")
+
+            uf_args = uf_parser.parse_args(sys.argv[2:])
+            mode = "all" if uf_args.all else ("user" if uf_args.user else "non-followers")
+
+            client = GitHubAPIClient(token=token, verbose=uf_args.verbose)
+            wl_mgr = WhitelistManager()
+            runner = UnfollowRunner(
+                client=client,
+                whitelist_mgr=wl_mgr,
+                mode=mode,
+                target_user=uf_args.user,
+                limit=uf_args.limit,
+                delay_min=uf_args.delay_min,
+                delay_max=uf_args.delay_max,
+                dry_run=uf_args.dry_run,
+                interactive=False,
+                verbose=uf_args.verbose,
+                force=uf_args.force
+            )
+            runner.run()
+            return
+
+    # Standard / Interactive / Follow CLI Mode
+    args = parse_args()
     is_interactive = args.interactive or (len(sys.argv) == 1 and not args.target)
 
     token = args.token

@@ -4,4 +4,5 @@ venv/
 __pycache__/
 *.py[cod]
 .follow_state.json
+.whitelist.json
 .DS_Store
