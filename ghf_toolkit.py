@@ -11,6 +11,7 @@ true in-place live dashboard updates, and zero scrollback pollution.
 
 import argparse
 import datetime
+import getpass
 import io
 import json
 import os
@@ -19,6 +20,7 @@ import readline
 import signal
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple
 
@@ -393,8 +395,11 @@ class StateManager:
     def save(self) -> None:
         try:
             self.state["last_run"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            with open(self.state_path, "w", encoding="utf-8") as f:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_file = self.state_path.with_name(f"{self.state_path.name}.tmp")
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(self.state, f, indent=2)
+            temp_file.replace(self.state_path)
         except Exception as e:
             console.print(f"[red][ERROR][/red] Failed to save state to {self.state_path}: {e}")
 
@@ -442,11 +447,14 @@ class WhitelistManager:
 
     def save(self) -> None:
         try:
-            with open(self.whitelist_path, "w", encoding="utf-8") as f:
+            self.whitelist_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_file = self.whitelist_path.with_name(f"{self.whitelist_path.name}.tmp")
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump({
                     "whitelist": sorted(list(self.whitelist)),
                     "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
                 }, f, indent=2)
+            temp_file.replace(self.whitelist_path)
         except Exception as e:
             console.print(f"[red][ERROR][/red] Failed to save whitelist to {self.whitelist_path}: {e}")
 
@@ -607,7 +615,8 @@ class GitHubAPIClient:
         return resp.json()
 
     def get_user_info(self, username: str) -> Optional[Dict[str, Any]]:
-        resp = self.request("GET", f"/users/{username}")
+        safe_user = urllib.parse.quote(username.strip().lstrip("@"))
+        resp = self.request("GET", f"/users/{safe_user}")
         if resp.status_code == 404:
             return None
         if resp.status_code != 200:
@@ -616,7 +625,11 @@ class GitHubAPIClient:
         return resp.json()
 
     def fetch_all_followers_set(self, username: Optional[str] = None) -> Set[str]:
-        endpoint = "/user/followers" if username is None else f"/users/{username}/followers"
+        if username is None:
+            endpoint = "/user/followers"
+        else:
+            safe_user = urllib.parse.quote(username.strip().lstrip("@"))
+            endpoint = f"/users/{safe_user}/followers"
         followers: Set[str] = set()
         page = 1
 
@@ -665,7 +678,8 @@ class GitHubAPIClient:
         return following
 
     def stream_target_followers(self, username: str) -> Generator[Dict[str, Any], None, None]:
-        endpoint = f"/users/{username}/followers"
+        safe_user = urllib.parse.quote(username.strip().lstrip("@"))
+        endpoint = f"/users/{safe_user}/followers"
         page = 1
 
         while True:
@@ -687,7 +701,8 @@ class GitHubAPIClient:
             page += 1
 
     def follow_user(self, username: str) -> bool:
-        endpoint = f"/user/following/{username.lstrip('@')}"
+        safe_user = urllib.parse.quote(username.strip().lstrip("@"))
+        endpoint = f"/user/following/{safe_user}"
         resp = self.request("PUT", endpoint)
         if resp.status_code in (204, 200):
             return True
@@ -696,7 +711,8 @@ class GitHubAPIClient:
             return False
 
     def unfollow_user(self, username: str) -> bool:
-        endpoint = f"/user/following/{username.lstrip('@')}"
+        safe_user = urllib.parse.quote(username.strip().lstrip("@"))
+        endpoint = f"/user/following/{safe_user}"
         resp = self.request("DELETE", endpoint)
         if resp.status_code in (204, 200):
             return True
@@ -1790,7 +1806,9 @@ def main() -> None:
         if is_interactive:
             console.print("\n[bold yellow]GitHub Personal Access Token not found in .env![/bold yellow]")
             try:
-                token = input("Enter GITHUB_TOKEN: ").strip()
+                token = getpass.getpass("Enter GITHUB_TOKEN (input hidden): ").strip()
+                if not token:
+                    token = input("Enter GITHUB_TOKEN (visible): ").strip()
             except (KeyboardInterrupt, EOFError):
                 sys.exit(0)
         
