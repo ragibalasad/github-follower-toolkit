@@ -51,7 +51,7 @@ except ImportError:
 # Global Rich console instance
 console = Console(highlight=False)
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 APP_NAME = "FollowerToolkit"
 APP_VERSION = f"v{__version__}"
 
