@@ -35,10 +35,23 @@ APP_NAME = "FollowerToolkit"
 APP_VERSION = f"v{__version__}"
 
 
+import ctypes
+
+def set_process_name(name: str = "ghf-toolkit") -> None:
+    """Set process name in Linux proc table so terminal emulators identify the command cleanly."""
+    if sys.platform.startswith("linux"):
+        try:
+            libc = ctypes.CDLL("libc.so.6")
+            libc.prctl(15, name.encode("utf-8")[:15], 0, 0, 0)
+        except Exception:
+            pass
+
+
 def set_terminal_title(title: str) -> None:
-    """Set the terminal window and tab title using ANSI OSC 0 escape codes."""
+    """Set terminal window, icon, and tab titles using ANSI OSC 0, 1, and 2 escape codes."""
+    set_process_name("ghf-toolkit")
     if sys.stdout.isatty():
-        sys.stdout.write(f"\033]0;{title}\007")
+        sys.stdout.write(f"\033]0;{title}\007\033]1;{title}\007\033]2;{title}\007")
         sys.stdout.flush()
 
 

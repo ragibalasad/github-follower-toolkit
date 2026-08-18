@@ -115,7 +115,9 @@ class TestAvatarAndBanner(unittest.TestCase):
         with patch("sys.stdout.isatty", return_value=True):
             with patch("sys.stdout.write") as mock_write:
                 set_terminal_title("ghf-toolkit — @testuser")
-                mock_write.assert_called_once_with("\033]0;ghf-toolkit — @testuser\007")
+                mock_write.assert_called_once_with(
+                    "\033]0;ghf-toolkit — @testuser\007\033]1;ghf-toolkit — @testuser\007\033]2;ghf-toolkit — @testuser\007"
+                )
 
     def test_image_to_ansi_halfblocks(self):
         img = Image.new("RGBA", (24, 24), color=(255, 0, 0, 255))
