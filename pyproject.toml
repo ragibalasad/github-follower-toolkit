@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "github-follower-toolkit"
-version = "1.0.0"
+dynamic = ["version"]
 description = "High-efficiency, rate-limit aware GitHub follower management toolkit with Fastfetch TUI banner & CLI."
 readme = "README.md"
 authors = [
@@ -30,3 +30,7 @@ github-follower-toolkit = "ghf_toolkit:main"
 
 [tool.setuptools]
 py-modules = ["ghf_toolkit"]
+
+[tool.setuptools.dynamic]
+version = {attr = "ghf_toolkit.__version__"}
+

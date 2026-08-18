@@ -49,8 +49,9 @@ except ImportError:
 # Global Rich console instance
 console = Console(highlight=False)
 
+__version__ = "1.0.0"
 APP_NAME = "FollowerToolkit"
-APP_VERSION = "v1.0"
+APP_VERSION = f"v{__version__}"
 
 
 def enter_alternate_screen() -> None:
@@ -1631,6 +1632,11 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         description="High-efficiency, rate-limit aware GitHub Auto-Follow Script."
+    )
+    parser.add_argument(
+        "-V", "--version",
+        action="version",
+        version=f"%(prog)s {__version__}"
     )
     parser.add_argument(
         "-t", "--target",
