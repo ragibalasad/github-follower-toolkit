@@ -28,6 +28,7 @@ from .ui import (
     fetch_avatar_ansi,
     image_to_ansi_halfblocks,
     render_neofetch_banner,
+    set_terminal_title,
 )
 from .cli import main
 
@@ -52,6 +53,7 @@ __all__ = [
     "render_neofetch_banner",
     "image_to_ansi_halfblocks",
     "fetch_avatar_ansi",
+    "set_terminal_title",
     "console",
     "main",
 ]

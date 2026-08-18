@@ -35,14 +35,23 @@ APP_NAME = "FollowerToolkit"
 APP_VERSION = f"v{__version__}"
 
 
+def set_terminal_title(title: str) -> None:
+    """Set the terminal window and tab title using ANSI OSC 0 escape codes."""
+    if sys.stdout.isatty():
+        sys.stdout.write(f"\033]0;{title}\007")
+        sys.stdout.flush()
+
+
 def enter_alternate_screen() -> None:
     """Clear the terminal screen and reset the cursor position."""
+    set_terminal_title("ghf-toolkit")
     sys.stdout.write("\033[2J\033[H")
     sys.stdout.flush()
 
 
 def exit_alternate_screen() -> None:
-    """Restore the terminal cursor visibility."""
+    """Restore the terminal cursor visibility and clear window title."""
+    set_terminal_title("")
     sys.stdout.write("\033[?25h")
     sys.stdout.flush()
 
@@ -379,8 +388,12 @@ class InteractiveSession:
         if status_msg is not None:
             self.current_status = status_msg
 
-        if not self.auth_user:
-            return
+        if self.auth_user:
+            auth_login = self.auth_user.get("login", "unknown")
+            if self.target_username:
+                set_terminal_title(f"ghf-toolkit — @{auth_login} (Target: @{self.target_username})")
+            else:
+                set_terminal_title(f"ghf-toolkit — @{auth_login}")
 
         dashboard = build_dashboard_renderable(
             auth_user=self.auth_user,

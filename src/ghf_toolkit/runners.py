@@ -20,6 +20,7 @@ from .ui import (
     get_developer_watermark_divider,
     render_frame_in_place,
     render_neofetch_banner,
+    set_terminal_title,
 )
 
 
@@ -207,6 +208,7 @@ class AutoFollowRunner:
                 if self.dry_run:
                     self.stats["followed_success"] += 1
                     status = f"[magenta][DRY RUN][/magenta] [{current_num}/{self.max_follows}] Would follow [bold]@{candidate_login}[/bold]"
+                    set_terminal_title(f"ghf-toolkit [dry-run] — Would follow @{candidate_login} [{current_num}/{self.max_follows}]")
                     if use_live:
                         update_live_ui(status)
                     elif not self.interactive or self.verbose:
@@ -215,6 +217,7 @@ class AutoFollowRunner:
                     continue
 
                 status_start = f"[{current_num}/{self.max_follows}] Following [bold]@{candidate_login}[/bold]..."
+                set_terminal_title(f"ghf-toolkit — Following @{candidate_login} [{current_num}/{self.max_follows}]")
                 if use_live:
                     update_live_ui(status_start)
                 elif not self.interactive or self.verbose:
@@ -229,6 +232,7 @@ class AutoFollowRunner:
 
                     sleep_time = random.uniform(self.delay_min, self.delay_max)
                     status_done = f"[green][SUCCESS][/green] Followed [bold]@{candidate_login}[/bold]! (Sleeping {sleep_time:.2f}s pacing)"
+                    set_terminal_title(f"ghf-toolkit — Followed @{candidate_login} [{self.stats['followed_success']}/{self.max_follows}]")
                     if use_live:
                         update_live_ui(status_done)
                     elif not self.interactive or self.verbose:
@@ -249,6 +253,8 @@ class AutoFollowRunner:
 
             if not final_status:
                 final_status = f"[green]Finished. Followed {self.stats['followed_success']} candidates from @{target_login}.[/green]"
+
+            set_terminal_title(f"ghf-toolkit — @{auth_login} (Followed {self.stats['followed_success']})")
 
             if not self.interactive or self.verbose:
                 self._print_summary()
@@ -448,16 +454,19 @@ class UnfollowRunner:
                 if self.dry_run:
                     self.stats["unfollowed_success"] += 1
                     status_text = f"[bold magenta][DRY-RUN][/bold magenta] Simulated unfollow @{username}."
+                    set_terminal_title(f"ghf-toolkit [dry-run] — Would unfollow @{username} [{idx}/{max_to_process}]")
                     if use_live:
                         update_live_ui(status_text)
                     elif self.verbose:
                         console.print(f"[magenta][DRY-RUN][/magenta] Would unfollow @{username}.")
                     continue
 
+                set_terminal_title(f"ghf-toolkit — Unfollowing @{username} [{idx}/{max_to_process}]")
                 success = self.client.unfollow_user(username)
                 if success:
                     self.stats["unfollowed_success"] += 1
                     status_text = f"[green][SUCCESS][/green] Unfollowed @{username}."
+                    set_terminal_title(f"ghf-toolkit — Unfollowed @{username} [{self.stats['unfollowed_success']}/{max_to_process}]")
                     if not use_live and self.verbose:
                         console.print(f"[green][SUCCESS][/green] Unfollowed @{username}!")
                 else:
@@ -477,6 +486,7 @@ class UnfollowRunner:
             if not self.interrupted:
                 mode_label = "Simulated" if self.dry_run else "Successfully"
                 final_status = f"[green]{mode_label} unfollowed {self.stats['unfollowed_success']} user(s). Whitelisted protected: {self.stats['skipped_whitelisted']}.[/green]"
+                set_terminal_title(f"ghf-toolkit — @{auth_login} (Unfollowed {self.stats['unfollowed_success']})")
                 update_live_ui(final_status)
 
             if not self.interactive or self.verbose:
