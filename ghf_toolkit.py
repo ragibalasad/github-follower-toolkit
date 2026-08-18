@@ -21,7 +21,7 @@ import sys
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple, Union
 
 try:
     import requests
@@ -50,7 +50,7 @@ except ImportError:
 # Global Rich console instance
 console = Console(highlight=False)
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 APP_NAME = "FollowerToolkit"
 APP_VERSION = f"v{__version__}"
 
@@ -443,6 +443,36 @@ def resolve_token(cli_token: Optional[str] = None) -> str:
     return get_saved_token()
 
 
+def get_default_state_path() -> Path:
+    """Returns ~/.config/ghf-toolkit/follow_state.json (with automatic migration from local if present)."""
+    global_path = get_config_dir() / "follow_state.json"
+    local_path = Path(".follow_state.json")
+    if not global_path.exists() and local_path.exists():
+        try:
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            with open(global_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+    return global_path
+
+
+def get_default_whitelist_path() -> Path:
+    """Returns ~/.config/ghf-toolkit/whitelist.json (with automatic migration from local if present)."""
+    global_path = get_config_dir() / "whitelist.json"
+    local_path = Path(".whitelist.json")
+    if not global_path.exists() and local_path.exists():
+        try:
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            with open(global_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+    return global_path
+
+
 # ==============================================================================
 # State Manager
 # ==============================================================================
@@ -450,8 +480,8 @@ def resolve_token(cli_token: Optional[str] = None) -> str:
 class StateManager:
     """Manages persistent state across runs to avoid redundant actions."""
 
-    def __init__(self, state_file: str = ".follow_state.json") -> None:
-        self.state_path = Path(state_file)
+    def __init__(self, state_file: Optional[Union[str, Path]] = None) -> None:
+        self.state_path = Path(state_file) if state_file else get_default_state_path()
         self.state: Dict[str, Any] = {
             "followed_users": {},
             "history_skipped": {},
@@ -503,10 +533,10 @@ class StateManager:
 # ==============================================================================
 
 class WhitelistManager:
-    """Manages protected GitHub users stored in .whitelist.json."""
+    """Manages protected GitHub users stored in global or custom whitelist.json."""
 
-    def __init__(self, whitelist_file: str = ".whitelist.json") -> None:
-        self.whitelist_path = Path(whitelist_file)
+    def __init__(self, whitelist_file: Optional[Union[str, Path]] = None) -> None:
+        self.whitelist_path = Path(whitelist_file) if whitelist_file else get_default_whitelist_path()
         self.whitelist: Set[str] = set()
         self.load()
 
@@ -1775,8 +1805,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--state-file",
         type=str,
-        default=".follow_state.json",
-        help="Path to JSON state history file (default: .follow_state.json)."
+        default=None,
+        help="Path to custom JSON state history file (default: ~/.config/ghf-toolkit/follow_state.json)."
     )
     parser.add_argument(
         "--clear-state",
