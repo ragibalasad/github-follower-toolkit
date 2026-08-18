@@ -30,12 +30,54 @@ Upon starting, the script displays your GitHub avatar in 24-bit TrueColor ANSI h
 
 ---
 
+## Installation & Quick Start
+
+### Option A: Install Directly as a Global CLI (No Git Clone Required)
+Install globally in an isolated environment using [pipx](https://pypa.github.io/pipx/) or [uv](https://github.com/astral-sh/uv):
+
+```bash
+# Using pipx (recommended)
+pipx install git+https://github.com/ragibalasad/github-follower-toolkit.git
+
+# Or run instantly without installing via uvx
+uvx --from git+https://github.com/ragibalasad/github-follower-toolkit.git ghf-toolkit
+```
+
+Once installed, simply run anywhere in your terminal:
+```bash
+ghf-toolkit
+```
+
+---
+
+### Option B: Local Repository Setup (For Developers)
+
+```bash
+git clone https://github.com/ragibalasad/github-follower-toolkit
+cd github-follower-toolkit
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+### GitHub Token Configuration
+Set your token in `.env` or pass it via the CLI:
+```bash
+cp .env.example .env
+# Edit .env and set:
+# GITHUB_TOKEN=ghp_your_actual_token_here
+```
+> **Token Scope:** Classic PAT with `user:follow` scope, or Fine-Grained PAT with `Followers: Read & Write`.
+
+---
+
 ## Two Execution Modes
 
 ### 1. Interactive REPL Mode (Recommended)
-Simply run the script with no arguments:
+Simply launch `ghf-toolkit` (or `python3 ghf_toolkit.py`):
 ```bash
-python3 auto_follow.py
+ghf-toolkit
 ```
 You will enter the interactive shell with state-aware prompt badges:
 ```text
@@ -45,8 +87,6 @@ ghf-toolkit [live] ❯ set target octocat
 
 ghf-toolkit [live] ❯ run
 ```
-
-#### Interactive Commands Reference:
 
 #### Synopsis & Command Reference:
 
@@ -91,56 +131,30 @@ SYNOPSIS:
 ---
 
 ### 2. One-Liner CLI Mode
-Execute commands directly from bash or cron jobs:
+Execute commands directly from bash, scripts, or cron jobs:
 
 ```bash
 # Follow Pipeline
 # Live run
-python3 auto_follow.py --target octocat --max-follows 50
+ghf-toolkit --target octocat --max-follows 50
 
 # Dry-run simulation with custom delay & verbose logging
-python3 auto_follow.py --target octocat --dry-run --delay-min 3.0 --delay-max 6.0 -v
+ghf-toolkit --target octocat --dry-run --delay-min 3.0 --delay-max 6.0 -v
 
 # Unfollow Pipeline
 # Unfollow up to 30 non-followers in dry-run mode
-python3 auto_follow.py ufollow -n -l 30 --dry-run
+ghf-toolkit ufollow -n -l 30 --dry-run
 
 # Live unfollow non-followers
-python3 auto_follow.py ufollow -n -l 50
+ghf-toolkit ufollow -n -l 50
 
 # Mass unfollow with confirmation skip
-python3 auto_follow.py ufollow -a -f
+ghf-toolkit ufollow -a -f
 
 # Whitelist
 # Manage protected VIP whitelist
-python3 auto_follow.py wl add torvalds octocat
-python3 auto_follow.py wl list
-```
-
----
-
-## Quick Setup
-
-### 1. Prerequisites
-- Python 3.8+
-- GitHub Personal Access Token (PAT)
-
-### 2. Clone & Install Dependencies
-```bash
-git clone https://github.com/ragibalasad/github-follower-toolkit
-cd github-follower-toolkit
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 3. Set GitHub Personal Access Token
-Create a classic PAT with `user:follow` scope (or fine-grained token with `Followers: Read & Write`):
-```bash
-cp .env.example .env
-# Edit .env and set:
-# GITHUB_TOKEN=ghp_your_actual_token_here
+ghf-toolkit wl add torvalds octocat
+ghf-toolkit wl list
 ```
 
 ---
@@ -163,5 +177,5 @@ cp .env.example .env
 
 ## Running Automated Tests
 ```bash
-python3 -m unittest test_auto_follow.py
+python3 -m unittest test_ghf_toolkit.py
 ```

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "github-follower-toolkit"
+version = "1.0.0"
+description = "High-efficiency, rate-limit aware GitHub follower management toolkit with Fastfetch TUI banner & CLI."
+readme = "README.md"
+authors = [
+    { name = "Ragib Al Asad" }
+]
+requires-python = ">=3.8"
+dependencies = [
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "pillow>=10.0.0",
+    "rich>=13.0.0",
+]
+keywords = ["github", "automation", "follower", "tui", "fastfetch", "cli", "toolkit"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+]
+
+[project.scripts]
+ghf-toolkit = "ghf_toolkit:main"
+github-follower-toolkit = "ghf_toolkit:main"
+
+[tool.setuptools]
+py-modules = ["ghf_toolkit"]

@@ -17,7 +17,7 @@ import requests
 from PIL import Image
 from rich.console import Console
 
-from auto_follow import (
+from ghf_toolkit import (
     AutoFollowRunner,
     GitHubAPIClient,
     InteractiveSession,

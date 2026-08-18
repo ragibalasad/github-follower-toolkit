@@ -1721,13 +1721,13 @@ def main() -> None:
             targets = wl_args[1:]
             if action in ("add", "-a", "+"):
                 if not targets:
-                    console.print("[yellow]Usage: auto_follow.py wl add <user1> [user2...][/yellow]")
+                    console.print("[yellow]Usage: ghf-toolkit wl add <user1> [user2...][/yellow]")
                 else:
                     added = wl_mgr.add(*targets)
                     console.print(f"[green]Added {len(added)} user(s) to whitelist: {', '.join('@' + u for u in added)}[/green]")
             elif action in ("rm", "del", "delete", "remove", "-d", "-"):
                 if not targets:
-                    console.print("[yellow]Usage: auto_follow.py wl rm <user1> [user2...][/yellow]")
+                    console.print("[yellow]Usage: ghf-toolkit wl rm <user1> [user2...][/yellow]")
                 else:
                     removed = wl_mgr.remove(*targets)
                     console.print(f"[green]Removed {len(removed)} user(s) from whitelist: {', '.join('@' + u for u in removed)}[/green]")
@@ -1743,7 +1743,7 @@ def main() -> None:
             if not token:
                 console.print("[red][ERROR][/red] GITHUB_TOKEN environment variable required for 'ufollow' command.")
                 sys.exit(1)
-            uf_parser = argparse.ArgumentParser(prog="auto_follow.py ufollow", description="Unfollow non-followers or all accounts with safety whitelists.")
+            uf_parser = argparse.ArgumentParser(prog="ghf-toolkit ufollow", description="Unfollow non-followers or all accounts with safety whitelists.")
             uf_parser.add_argument("-n", "--non-followers", action="store_true", default=True, help="Unfollow non-followers (default)")
             uf_parser.add_argument("-a", "--all", action="store_true", help="Unfollow ALL accounts you follow")
             uf_parser.add_argument("user", nargs="?", default=None, help="Specific user to unfollow")
