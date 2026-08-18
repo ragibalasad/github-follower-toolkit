@@ -1,181 +1,165 @@
-# GitHub Follower Toolkit (Fastfetch TUI & High-Efficiency)
+# GitHub Follower Toolkit (`ghf-toolkit`)
 
-An ultra-efficient, rate-limit aware automation toolkit with both One-Liner CLI and Interactive TUI REPL modes featuring a Fastfetch/Neofetch system banner that updates in real-time.
+`ghf-toolkit` is a command-line interface (CLI) and terminal user interface (TUI) tool to manage GitHub followers. It automates follow and unfollow tasks, monitors API rate limits, and displays account metrics in the terminal.
 
-Manage your entire GitHub network lifecycle:
-* **Auto-Follow:** Follow target accounts' followers in bulk — strictly filtering out users who already follow you or are already followed.
-* **Unfollow (`ufollow`):** Prune non-followers (who don't follow back) or mass unfollow with safety confirmation.
-* **Whitelist (`wl`):** Protect VIP accounts, friends, mentors, and organizations from ever being unfollowed.
+## Features
 
----
-
-## Visual Presentation (Fastfetch / Neofetch Terminal Banner)
-
-Upon starting, the script displays your GitHub avatar in 24-bit TrueColor ANSI half-blocks (`▀`) alongside your live GitHub metrics:
-
-```text
-       ▄▄▄▄▄▄▄▄▄▄▄▄       ragibalasad@github
-    ▄████████████████▄    ──────────────────────────────────────
-   ████████████████████   User:       Ragib Al Asad (@ragibalasad)
-  ████▀▀            ▀▀██  Bio:        Full-Stack Engineer & Builder
-  ████  ███      ███  ██  Account:    Joined 2021 | 48 Repos
-  ████  ▀▀▀      ▀▀▀  ██  Network:    142 Followers | 95 Following
-  ████     ▄▄▄▄▄▄     ██  Target:     @octocat (4,820 followers)
-   ████▄   ▀▀▀▀▀▀   ▄██   API Quota:  4,985 / 5,000 (99%)
-    ▀████████████████▀    Safety:     Pacing 2.0s–4.0s | Limit: 50
-       ▀▀▀▀▀▀▀▀▀▀▀▀       Mode:       ACTIVE (Live Follow)
-                          
-                           ● ● ● ● ● ● ● ●
-```
+- **Follow Target Users:** Follow followers of a target account (skips users who already follow you, accounts you already follow, and previous session history).
+- **Unfollow Non-Followers:** Unfollow accounts that do not follow you back.
+- **Mass Unfollow:** Unfollow all accounts you currently follow.
+- **Unfollow Specific Users:** Unfollow individual users by username.
+- **Protect Accounts (Whitelist):** Prevent specific users from being unfollowed.
+- **Simulate Operations (`--dry-run`):** Test follow or unfollow actions without making account changes.
 
 ---
 
-## Installation & Quick Start
+## Installation & Setup
 
-### Option A: Install Directly as a Global CLI (No Git Clone Required)
-Install globally in an isolated environment using [pipx](https://pypa.github.io/pipx/) or [uv](https://github.com/astral-sh/uv):
+### Step 1: Install
+
+**Option A: Using pipx (Recommended)**
 
 ```bash
-# Using pipx (recommended)
 pipx install git+https://github.com/ragibalasad/github-follower-toolkit.git
-
-# Or run instantly without installing via uvx
-uvx --from git+https://github.com/ragibalasad/github-follower-toolkit.git ghf-toolkit
 ```
 
-Once installed, simply run anywhere in your terminal:
+**Option B: Using pip (If pipx is not installed)**
+
+```bash
+pip install git+https://github.com/ragibalasad/github-follower-toolkit.git
+```
+
+### Step 2: Create a GitHub Token
+
+Create a Personal Access Token (PAT) with follow permissions:
+
+- **[Classic Token (Recommended)](https://github.com/settings/tokens/new):** Enter a note, select the `user:follow` scope checkbox, and click **Generate token**.
+- **[Fine-Grained Token](https://github.com/settings/personal-access-tokens/new):** Under **Account permissions** > **Followers**, set **Access** to **Read and write**, and click **Generate token**.
+
+### Step 3: Launch and Connect Token
+
+Start the application:
+
 ```bash
 ghf-toolkit
 ```
 
----
+Paste your token when prompted. The application saves it securely to `~/.config/ghf-toolkit/config.json` (`0600` file permissions).
 
-### Option B: Local Repository Setup (For Developers)
-
-```bash
-git clone https://github.com/ragibalasad/github-follower-toolkit
-cd github-follower-toolkit
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-### GitHub Token & Configuration
-`ghf-toolkit` follows the standard CLI credential hierarchy:
-1. **Interactive Prompt:** On first launch, the tool prompts for your token (masked input) and securely saves it to `~/.config/ghf-toolkit/config.json` (`chmod 600`).
-2. **Environment Variable:** `export GITHUB_TOKEN=ghp_xxx` in your `~/.bashrc` or `~/.zshrc`.
-3. **Local `.env`:** For developers, a `.env` file in the repo (`cp .env.example .env`).
-4. **CLI Flag:** `ghf-toolkit --token ghp_xxx`
-
-> **Token Scope:** Classic PAT with `user:follow` scope, or Fine-Grained PAT with `Followers: Read & Write`.
+> **Alternative Token Methods:**
+> - In the interactive shell: Run `set token <TOKEN>`
+> - In configuration file: Save `{"github_token": "<TOKEN>"}` in `~/.config/ghf-toolkit/config.json` (Windows: `%APPDATA%/ghf-toolkit/config.json`)
 
 ---
 
-## Two Execution Modes
+## Usage
 
-### 1. Interactive REPL Mode (Recommended)
-Simply launch `ghf-toolkit` (or `python3 ghf_toolkit.py`):
+### 1. Interactive Mode
+
+Run `ghf-toolkit` without arguments or with `-i`:
+
 ```bash
 ghf-toolkit
 ```
-You will enter the interactive shell with state-aware prompt badges:
-```text
-ghf-toolkit [live] ❯ set target octocat
-[INFO] Looking up GitHub user '@octocat'...
-[SUCCESS] Target set to @octocat (4,820 followers).
 
-ghf-toolkit [live] ❯ run
-```
+#### Available Commands
 
-#### Synopsis & Command Reference:
-
-```text
-SYNOPSIS:
-  run [-v]
-  ufollow [-n | -a] [-l <N>] [-d <min> [max]] [-s] [-f] [-v]
-  ufollow <username> [-s]
-  wl <add | rm> <username...>
-  wl <list | clear>
-  set <target | limit | delay | dry-run | token> <value>
-  show | clear-state | help | exit
-```
-
-**Commands:**
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
-| `run` | `[-v]` | Execute auto-follow pipeline for target account (`-v`: verbose) |
-| `ufollow` | `[-n \| -a] [-l <N>] [-s] [-f] [-v]` | Execute unfollow pipeline with rate-limit protection |
-| `ufollow` | `<username> [-s]` | Unfollow a specific user |
-| `wl add` | `<user1> [user2...]` | Add username(s) to protected whitelist |
-| `wl rm` | `<user1> [user2...]` | Remove username(s) from protected whitelist |
-| `wl list` | | List all protected accounts |
-| `wl clear` | | Clear the entire whitelist |
-| `set` | `<key> <value>` | Update session settings (`target`, `limit`, `delay`, `dry-run`, `token`) |
-| `show` | | Refresh profile metrics, API quota, and dashboard |
-| `clear-state` | | Purge local follow history cache (`.follow_state.json`) |
-| `help` | | Display manual and synopsis |
-| `exit` | | Terminate interactive session |
+| `run` | `[-v]` | Start the follow process for the current target. |
+| `ufollow` | `[-n \| -a] [-l <N>] [-d <min> [max]] [-s] [-f] [-v]` | Start the unfollow process. |
+| `ufollow` | `<username> [-s]` | Unfollow a specific user. |
+| `wl add` | `<user1> [user2...]` | Add users to the protected whitelist. |
+| `wl rm` | `<user1> [user2...]` | Remove users from the whitelist. |
+| `wl list` | | Show all whitelisted users. |
+| `wl clear` | | Remove all users from the whitelist. |
+| `set target` | `<username>` | Set target GitHub user. |
+| `set limit` | `<number>` | Set session follow/unfollow limit. |
+| `set delay` | `<min> [max]` | Set delay range in seconds. |
+| `set dry-run` | `<on \| off>` | Enable or disable simulation mode. |
+| `set token` | `<token>` | Update the GitHub token. |
+| `show` | | Refresh metrics and API quota. |
+| `clear-state` | | Clear local follow history (`follow_state.json`). |
+| `help` | | Show command reference manual. |
+| `exit` | | Exit the application. |
 
-**`ufollow` Options:**
-| Option | Description |
-| :--- | :--- |
-| `-n, --non-followers` | Target accounts that do not follow back (default) |
-| `-a, --all` | Target all accounts currently followed |
-| `-l, --limit <N>` | Maximum number of accounts to process in session |
-| `-d, --delay <min> [max]` | Random jitter pacing delay in seconds (default: 2.0 4.0) |
-| `-s, --dry-run` | Simulate execution without modifying following list |
-| `-f, --force` | Bypass confirmation prompt on destructive actions (`-a`) |
-| `-v, --verbose` | Stream detailed execution logs in real-time |
+#### `ufollow` Options
+
+- `-n, --non-followers`: Target accounts that do not follow back (default).
+- `-a, --all`: Target all followed accounts.
+- `-l, --limit <N>`: Maximum number of accounts to unfollow.
+- `-d, --delay <min> [max]`: Pacing delay range in seconds.
+- `-s, --dry-run`: Simulate operations without sending API requests.
+- `-f, --force`: Skip confirmation prompt for `--all` mode.
+- `-v, --verbose`: Print detailed logs during execution.
 
 ---
 
-### 2. One-Liner CLI Mode
-Execute commands directly from bash, scripts, or cron jobs:
+### 2. Direct CLI Mode
+
+Run operations directly without entering the interactive shell:
+
+#### Auto-Follow
 
 ```bash
-# Follow Pipeline
-# Live run
-ghf-toolkit --target octocat --max-follows 50
+# Follow up to 50 users from target account
+ghf-toolkit --target torvalds --max-follows 50
 
-# Dry-run simulation with custom delay & verbose logging
-ghf-toolkit --target octocat --dry-run --delay-min 3.0 --delay-max 6.0 -v
+# Simulate follow operation with custom delay
+ghf-toolkit --target torvalds --dry-run --delay-min 3.0 --delay-max 5.0 -v
+```
 
-# Unfollow Pipeline
-# Unfollow up to 30 non-followers in dry-run mode
-ghf-toolkit ufollow -n -l 30 --dry-run
+#### Auto-Unfollow
 
-# Live unfollow non-followers
-ghf-toolkit ufollow -n -l 50
+```bash
+# Unfollow up to 30 non-followers
+ghf-toolkit ufollow -n -l 30
 
-# Mass unfollow with confirmation skip
+# Unfollow all accounts (skip confirmation prompt)
 ghf-toolkit ufollow -a -f
 
-# Whitelist
-# Manage protected VIP whitelist
-ghf-toolkit wl add torvalds octocat
-ghf-toolkit wl list
+# Unfollow a specific user in simulation mode
+ghf-toolkit ufollow octocat --dry-run
 ```
 
----
+#### Whitelist Management
 
-## Efficiency & Anti-Abuse Architecture
-
-1. **O(1) In-Memory Relationship Filtering**:
-   - Pre-fetches your followers and following lists in bulk (`100/page`) into hash sets.
-   - Drops total network calls by >99%.
-2. **Primary Rate-Limit Monitoring (5,000 req/hr)**:
-   - Tracks `X-RateLimit-Remaining` and auto-sleeps before exhaustion.
-3. **Secondary Anti-Abuse Protection**:
-   - Random jitter delays (default 2.0s–4.0s) between follow/unfollow mutations.
-   - Listens to HTTP `403`/`429` with `Retry-After` headers and handles exponential backoff.
-4. **Resumable State Caching & Whitelisting**:
-   - `.follow_state.json`: Automatically records and avoids re-processing previously followed users.
-   - `.whitelist.json`: Protects VIP accounts from accidental unfollows.
-
----
-
-## Running Automated Tests
 ```bash
-python3 -m unittest test_ghf_toolkit.py
+# Add users to whitelist
+ghf-toolkit wl add torvalds octocat
+
+# List whitelisted users
+ghf-toolkit wl list
+
+# Remove user from whitelist
+ghf-toolkit wl rm octocat
+
+# Clear whitelist
+ghf-toolkit wl clear
 ```
+
+---
+
+## Command Line Arguments Reference
+
+| Argument | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `-t, --target` | string | `None` | Target GitHub username. |
+| `--token` | string | `None` | GitHub Personal Access Token. |
+| `-m, --max-follows` | integer | `50` | Maximum accounts to follow in the session. |
+| `--delay-min` | float | `2.0` | Minimum delay in seconds between mutations. |
+| `--delay-max` | float | `4.0` | Maximum delay in seconds between mutations. |
+| `--dry-run` | flag | `False` | Simulate actions without making API mutations. |
+| `-i, --interactive` | flag | `False` | Start in interactive REPL mode. |
+| `--state-file` | string | `None` | Path to custom follow state JSON file. |
+| `--clear-state` | flag | `False` | Clear local follow state before execution. |
+| `-v, --verbose` | flag | `False` | Enable verbose log output. |
+| `-V, --version` | flag | | Show program version. |
+
+---
+
+## File Storage Locations
+
+- **Configuration:** `~/.config/ghf-toolkit/config.json` (Windows: `%APPDATA%/ghf-toolkit/config.json`)
+- **Follow State History:** `~/.config/ghf-toolkit/follow_state.json` (or `.follow_state.json` in current directory)
+- **Whitelist:** `~/.config/ghf-toolkit/whitelist.json` (or `.whitelist.json` in current directory)
